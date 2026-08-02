@@ -56,10 +56,87 @@ namespace WaifuAvatar.Editor
                 BuildTarget.StandaloneWindows64,
                 new[] { GraphicsDeviceType.Direct3D11 });
 
+            // 데스크탑 펫 크기. 기본값(전체화면급)으로 두면 투명한 1920x1080 창이
+            // 화면을 덮는다. 알파 히트 테스트 덕에 클릭은 통과하지만, 그만큼을
+            // 매 프레임 그리고 합성하는 것은 낭비이고 다른 창의 합성에도 영향을 준다.
+            PlayerSettings.defaultScreenWidth = 480;
+            PlayerSettings.defaultScreenHeight = 800;
+            PlayerSettings.defaultIsNativeResolution = false;
+
             PlayerSettings.productName = "WaifuAvatar";
             PlayerSettings.companyName = "waifu-agent";
 
             Debug.Log("[waifu] PlayerSettings 적용 — 투명 창 요구사항 반영됨");
+        }
+
+        /// <summary>
+        /// Windows 플레이어를 빌드한다. 결과는 `unity/WaifuAvatar/Build/WaifuAvatar.exe`.
+        ///
+        /// 이 경로를 `waifu.config.json` 의 `unity.playerPath` 에 넣으면 Electron 이 띄운다.
+        /// 직접 실행하면 브리지 환경변수가 없어 바로 종료한다 — 의도된 동작이다.
+        ///
+        /// 배치 모드:
+        ///   Unity.exe -batchmode -quit -projectPath unity/WaifuAvatar \
+        ///     -executeMethod WaifuAvatar.Editor.WaifuProjectSetup.BuildWindows
+        /// </summary>
+        [MenuItem("Waifu/Windows 플레이어 빌드")]
+        public static void BuildWindows()
+        {
+            ApplyPlayerSettings();
+            if (!File.Exists(ScenePath)) CreateScene();
+
+            var output = Path.Combine(Directory.GetCurrentDirectory(), "Build", "WaifuAvatar.exe");
+            Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+
+            var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+            {
+                scenes = new[] { ScenePath },
+                locationPathName = output,
+                target = BuildTarget.StandaloneWindows64,
+                options = BuildOptions.None
+            });
+
+            var summary = report.summary;
+            Debug.Log($"[waifu] 빌드 {summary.result} — {summary.totalSize} bytes, {output}");
+            if (summary.result != UnityEditor.Build.Reporting.BuildResult.Succeeded)
+            {
+                // 배치 모드에서 조용히 0 으로 끝나면 CI 가 성공으로 읽는다.
+                throw new System.Exception($"빌드 실패: {summary.result}");
+            }
+
+            CopyMotions(Path.GetDirectoryName(output));
+        }
+
+        /// <summary>
+        /// VRMA 를 빌드 옆으로 복사한다.
+        ///
+        /// AssetBundle 로 굽지 않는 이유: 55개를 번들로 만들 이유가 없고, 파일로
+        /// 두면 사용자가 자기 모션을 넣을 수 있다. 대신 **복사를 잊으면 셸이 모션
+        /// 없이 뜨므로** 빌드 단계에 묶어둔다 — 실측에서 실제로 잊었다.
+        /// </summary>
+        static void CopyMotions(string buildDirectory)
+        {
+            if (string.IsNullOrEmpty(buildDirectory)) return;
+
+            // unity/WaifuAvatar/Assets -> 저장소 루트 -> resources/motions
+            var source = Path.GetFullPath(Path.Combine(
+                Application.dataPath, "..", "..", "..", "resources", "motions"));
+            if (!Directory.Exists(source))
+            {
+                Debug.LogWarning($"[waifu] 모션 원본을 찾지 못했다: {source}");
+                return;
+            }
+
+            var target = Path.Combine(buildDirectory, "motions");
+            Directory.CreateDirectory(target);
+
+            var count = 0;
+            foreach (var file in Directory.GetFiles(source, "*.vrma"))
+            {
+                File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
+                count++;
+            }
+            Debug.Log($"[waifu] 모션 {count}개 복사 — {target}");
         }
 
         [MenuItem("Waifu/기본 씬 생성")]

@@ -54,26 +54,48 @@ namespace WaifuAvatar.Window
                       $"히트 임계값={_window.opacityThreshold:F3}");
         }
 
+        Vector2? _pendingAnchor;
+
+        /// <summary>
+        /// 아바타를 세울 자리를 예약한다.
+        ///
+        /// **바로 옮기지 않는다.** UniWindowController 의 네이티브 창 정보는 자기
+        /// Awake 가 끝나야 채워지는데, 컴포넌트 Awake 순서는 보장되지 않는다.
+        /// 실측에서 이 시점의 `GetMonitorRect(0)` 이 0x0 을 돌려줘 아바타가 설정을
+        /// 무시하고 화면 좌상단에 섰다. 모니터 크기가 잡힐 때까지 미룬다.
+        /// </summary>
         /// <param name="anchor">0..1 정규화, **좌하단 기준** (protocol.ts 의 avatar.anchor).</param>
         public void Place(Vector2 anchor)
         {
-            if (_window == null) return;
+            _pendingAnchor = anchor;
+            TryPlace();
+        }
+
+        /// <returns>자리를 잡았으면 true. 아직 모니터를 못 읽었으면 false.</returns>
+        bool TryPlace()
+        {
+            if (_window == null || !_pendingAnchor.HasValue) return false;
 
             var monitor = UniWindowController.GetMonitorRect(0);
+            // 0x0 은 "아직 준비 안 됨" 이다. 그대로 쓰면 전부 0 으로 나눠 좌상단에 붙는다.
+            if (monitor.width <= 0f || monitor.height <= 0f) return false;
+
             var size = _window.windowSize;
+            if (size.x <= 0f || size.y <= 0f) return false;
 
-            // Unity 화면 좌표는 좌하단 원점이지만 창 위치는 좌상단 기준이다.
-            // 그대로 넣으면 위아래가 뒤집힌 자리에 뜬다.
-            var x = monitor.xMin + (monitor.width - size.x) * Mathf.Clamp01(anchor.x);
-            var y = monitor.yMin + (monitor.height - size.y) * (1f - Mathf.Clamp01(anchor.y));
-
-            _window.windowPosition = new Vector2(x, y);
+            _window.windowPosition = ScreenClamp.FromAnchor(_pendingAnchor.Value, size, monitor);
             Debug.Log($"[waifu] 창 위치 {_window.windowPosition} (모니터 {monitor})");
+            _pendingAnchor = null;
+            return true;
         }
 
         void Update()
         {
             if (_window == null) return;
+
+            // 예약된 자리가 있으면 잡힐 때까지 계속 시도한다. 한 번만 시도하고 포기하면
+            // 창이 준비되는 프레임을 놓쳐 설정이 조용히 무시된다.
+            if (_pendingAnchor.HasValue) TryPlace();
 
             // 클릭 통과 여부가 곧 "아바타 위에 있는가" 다. 통과 중이면 아바타 밖이다.
             var over = !_window.isClickThrough;
