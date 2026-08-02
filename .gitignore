@@ -16,6 +16,26 @@ resources/models/*
 # 런타임에 생성되는 사용자 설정 (waifu.config.example.json 이 템플릿)
 waifu.config.json
 
+# Unity 가 생성하는 캐시와 빌드 산출물.
+# Packages/ 아래의 MIT 패키지(UniVRM·UniWindowController)는 **커밋한다** —
+# 클론한 사람이 바로 열 수 있어야 하고, LICENSE 파일도 함께 남아야 한다.
+unity/*/Library/
+unity/*/Temp/
+unity/*/Logs/
+unity/*/obj/
+unity/*/UserSettings/
+unity/*/Build/
+unity/*/Builds/
+unity/*/MemoryCaptures/
+unity/*/Recordings/
+unity/*/[Aa]ssets/AssetStoreTools*
+unity/*/*.csproj
+unity/*/*.sln
+unity/*/*.unityproj
+unity/*/*.userprefs
+unity/*/sysinfo.txt
+unity/*/crashlytics-build.properties
+
 # 로컬 AI 에이전트 지침과 저장소 전용 스킬
 /AGENTS.md
 /CLAUDE.md
