@@ -53,6 +53,8 @@ interface RawEvent {
     delta?: { type?: string; text?: string }
     content_block?: ContentBlock
   }
+  /** system/init 전용 */
+  mcp_servers?: { name: string; status: string }[]
   /** rate_limit_event 전용 */
   rate_limit_info?: RateLimitInfo
   /** system/post_turn_summary 전용 */
@@ -101,7 +103,9 @@ export class ClaudeEventMapper {
       if (!e.session_id || this.announcedSession === e.session_id) return []
       this.announcedSession = e.session_id
       const ev: BackendEvent = { type: 'session', sessionId: e.session_id, backend: 'claude-code' }
-      return [e.model ? { ...ev, model: e.model } : ev]
+      if (e.model) ev.model = e.model
+      if (e.mcp_servers) ev.mcpServers = e.mcp_servers
+      return [ev]
     }
     if (e.subtype === 'post_turn_summary') {
       const detail = e.status_detail?.trim()

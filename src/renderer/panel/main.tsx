@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { BackendEvent, PanelEvent, WaifuApi } from '@shared/protocol'
+import type { BackendEvent, PanelEvent, PermissionRequest, WaifuApi } from '@shared/protocol'
 
 declare global {
   interface Window {
@@ -20,6 +20,8 @@ function Panel(): React.JSX.Element {
   const [lines, setLines] = useState<Line[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 승인 대기 중인 요청. 훅이 응답을 기다리며 툴 실행을 붙잡고 있다. */
+  const [permission, setPermission] = useState<PermissionRequest | null>(null)
   /** 스트리밍 중인 응답은 마지막 줄에 계속 이어 붙인다. */
   const streaming = useRef(false)
 
@@ -27,6 +29,14 @@ function Panel(): React.JSX.Element {
     return window.waifu.onPanelEvent((evt: PanelEvent) => {
       if (evt.type === 'notice') {
         setLines((ls) => [...ls, { id: nextId++, who: 'system', text: evt.message }])
+        return
+      }
+      if (evt.type === 'permission-request') {
+        setPermission(evt.request)
+        return
+      }
+      if (evt.type === 'permission-resolved') {
+        setPermission((p) => (p?.id === evt.id ? null : p))
         return
       }
       if (evt.type !== 'backend') return
@@ -84,6 +94,38 @@ function Panel(): React.JSX.Element {
           </div>
         ))}
       </div>
+      {permission && (
+        <div style={S.permission}>
+          <div style={S.permTitle}>
+            <b>{permission.toolName}</b> 실행을 허락할까?
+          </div>
+          {permission.reason && <div style={S.permReason}>{permission.reason}</div>}
+          <pre style={S.permInput}>{JSON.stringify(permission.input, null, 2)}</pre>
+          <div style={S.permButtons}>
+            <button
+              style={{ ...S.button, background: '#3a3750' }}
+              onClick={() => {
+                window.waifu.respondPermission(permission.id, {
+                  behavior: 'deny',
+                  message: '사용자가 거부했다.'
+                })
+                setPermission(null)
+              }}
+            >
+              거부
+            </button>
+            <button
+              style={S.button}
+              onClick={() => {
+                window.waifu.respondPermission(permission.id, { behavior: 'allow' })
+                setPermission(null)
+              }}
+            >
+              허락
+            </button>
+          </div>
+        </div>
+      )}
       <div style={S.inputRow}>
         <textarea
           style={S.textarea}
@@ -115,7 +157,28 @@ const S = {
     waifu: { background: '#1e1c2b', alignSelf: 'flex-start', maxWidth: '90%' },
     system: { color: '#8b869e', fontSize: '13px', padding: '2px 4px' }
   },
-  inputRow: { display: 'flex', gap: '8px', padding: '12px', borderTop: '1px solid #26243200' },
+  permission: {
+    margin: '0 12px',
+    padding: '12px',
+    borderRadius: '12px',
+    background: '#241f33',
+    border: '1px solid #4a3f6b'
+  },
+  permTitle: { marginBottom: '6px' },
+  permReason: { color: '#b9b3cc', fontSize: '13px', marginBottom: '8px' },
+  permInput: {
+    margin: '0 0 10px',
+    padding: '8px',
+    borderRadius: '8px',
+    background: '#15131f',
+    fontSize: '12px',
+    maxHeight: '160px',
+    overflow: 'auto',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all'
+  },
+  permButtons: { display: 'flex', gap: '8px', justifyContent: 'flex-end' },
+  inputRow: { display: 'flex', gap: '8px', padding: '12px', borderTop: '1px solid #262432' },
   textarea: {
     flex: 1,
     resize: 'none',

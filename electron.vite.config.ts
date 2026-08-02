@@ -19,7 +19,10 @@ export default defineConfig({
       // exclude = "외부화하지 마라" = 번들에 포함하라.
       // 자식 스크립트(mcp/훅)는 패키징 후 app.asar.unpacked 에서 실행되는데, 거기서는
       // 위로 올라가도 node_modules 가 없다. bare import 를 남기면 ERR_MODULE_NOT_FOUND 로 죽는다.
-      externalizeDeps: { exclude: ['@modelcontextprotocol/sdk', 'ws', 'zod'] },
+      // `ws` 는 일부러 뺐다 — 번들에 넣으면 선택적 네이티브 가속기(bufferutil,
+      // utf-8-validate)를 정적 import 로 끌어와 로드 타임에 죽는다. 제어 채널은
+      // node 빌트인 http 로 간다.
+      externalizeDeps: { exclude: ['@modelcontextprotocol/sdk', 'zod'] },
       rollupOptions: {
         // Electron 엔트리 **하나만** 둔다.
         // mcp 서버와 권한 훅을 여기에 같이 넣으면 Rollup 이 공유 모듈을 out/main/chunks/ 로

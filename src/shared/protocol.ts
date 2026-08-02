@@ -85,6 +85,15 @@ export type AvatarCommand =
       audio?: SpeechAudio
       visemes?: VisemeFrame[]
     }
+  /**
+   * 화면 전역 커서 방향. 아바타 창 중심 기준으로 정규화한 값이며, 커서가 창 밖에 있으면
+   * ±1 을 넘어간다.
+   *
+   * 렌더러의 mousemove 로는 부족하다 — setIgnoreMouseEvents(true, {forward:true}) 는
+   * 커서가 창 **위에 있을 때만** WM_MOUSEMOVE 를 전달하므로, 데스크탑 어디를 보고 있는지
+   * 알 수 없다. main 에서 screen.getCursorScreenPoint() 로 폴링해 넣어준다.
+   */
+  | { type: 'gaze'; x: number; y: number }
   | { type: 'express'; emotion: Emotion; intensity?: number }
   | { type: 'motion'; name: string; loop?: boolean }
   | { type: 'status'; state: AgentState }
@@ -96,6 +105,16 @@ export type AvatarCommand =
 export type AvatarEvent =
   /** 아바타 위 불투명 픽셀에 커서가 올라갔는지. 클릭 통과 토글에 쓴다. */
   | { type: 'hover'; over: boolean }
+  /**
+   * 아바타를 잡아 끄는 중. 창을 옮기는 주체는 main 이다.
+   *
+   * 드래그 중에는 커서가 실루엣 밖으로 나가도 클릭 통과로 되돌리면 안 된다 —
+   * 그 순간 mouseup 을 못 받아 드래그가 영원히 안 끝난다.
+   */
+  | { type: 'drag-start' }
+  /** 마지막 이벤트 이후의 화면 좌표 이동량. */
+  | { type: 'drag-move'; dx: number; dy: number }
+  | { type: 'drag-end' }
   | { type: 'speech-end'; id: string }
   /**
    * `presets` 는 모델이 실제로 들고 있는 VRM 표정 프리셋 이름들이다.
@@ -124,7 +143,17 @@ export interface RateLimitInfo {
 }
 
 export type BackendEvent =
-  | { type: 'session'; sessionId: string; backend: BackendKind; model?: string }
+  | {
+      type: 'session'
+      sessionId: string
+      backend: BackendKind
+      model?: string
+      /**
+       * 붙은 MCP 서버와 그 상태. 와이프 제어 채널이 실제로 연결됐는지 확인하는 유일한 신호다.
+       * 여기서 waifu 가 'connected' 가 아니면 에이전트는 아바타를 제어할 수 없다.
+       */
+      mcpServers?: { name: string; status: string }[]
+    }
   | { type: 'text-delta'; text: string }
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }

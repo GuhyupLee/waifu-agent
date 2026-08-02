@@ -1,7 +1,9 @@
 import type { BackendEvent, BackendKind, PermissionMode } from '@shared/protocol'
 
 export interface SessionOpts {
-  /** 에이전트의 작업 루트. */
+  /** 실행할 CLI. 설정의 backend.claudeCode.bin / codex.bin 이 들어온다. */
+  bin: string
+  /** 에이전트의 작업 루트. 세션 재개가 cwd 스코프라 Task 마다 기억해야 한다. */
   cwd: string
   /** 이어받을 세션. 없으면 새로 시작한다. */
   resumeSessionId?: string
@@ -10,11 +12,25 @@ export interface SessionOpts {
   permissionMode: PermissionMode
   /** `--mcp-config` 로 넘길 JSON 문자열. 와이프 제어 MCP 서버가 여기 들어간다. */
   mcpConfigJson?: string
-  /** 권한 승인을 라우팅할 MCP 툴 이름 (예: `mcp__waifu__ask_permission`). */
-  permissionPromptTool?: string
-  /** 퍼소나를 담은 파일 경로. `--append-system-prompt-file` 로 넘긴다. */
-  systemPromptFile?: string
+  /**
+   * `--settings` 로 넘길 파일 경로. PreToolUse 훅이 여기 들어간다.
+   * (`--permission-prompt-tool` 은 claude 2.1.207 에 존재하지 않는다.)
+   */
+  settingsPath?: string
+  /**
+   * 퍼소나. `--append-system-prompt` 로 인라인 전달한다 —
+   * `--append-system-prompt-file` 은 이 버전에 없다.
+   */
+  systemPrompt?: string
   model?: string
+  /**
+   * 자식 CLI 환경에 덧붙일 값. 제어 서버 주소와 토큰이 여기로 간다.
+   *
+   * 권한 훅은 **claude 가** spawn 하므로 우리가 직접 env 를 줄 수 없다. 대신 claude 의
+   * 환경을 훅이 상속하므로, claude 를 띄울 때 넣어두면 훅까지 전달된다.
+   * (MCP 서버는 --mcp-config 의 env 로도 받지만, 경로가 하나로 통일되는 편이 낫다.)
+   */
+  extraEnv?: Record<string, string>
 }
 
 export type BackendListener = (event: BackendEvent) => void

@@ -1,24 +1,19 @@
-/**
- * Claude Code 가 spawn 하는 자식 스크립트(MCP 서버, 권한 훅)가 Electron main 의
- * ControlServer 와 이야기하는 통로.
- *
- * 이 파일을 `src/shared/` 에 두지 않는 이유: `ws` 는 Node 전용이라 렌더러 번들에 섞이면
- * vite 가 `child_process`/`fs` 를 브라우저용으로 외부화하면서 런타임에 터진다.
- * `src/shared/` 는 순수 타입·상수·순수 함수만 둔다.
- */
-import { WebSocket } from 'ws'
+import { request } from 'node:http'
 import { CONTROL_ENV } from '@shared/protocol'
 import type { ControlRequest, ControlResponse, WaifuToolName } from '@shared/protocol'
 
-const CONNECT_TIMEOUT_MS = 3000
-
+/**
+ * Claude Code 가 spawn 하는 자식 스크립트(MCP 서버, 권한 훅)가 Electron main 의
+ * ControlServer 를 호출하는 통로.
+ *
+ * node 빌트인만 쓴다. 이 파일은 `?modulePath` 로 격리 빌드되어 패키징 후에는
+ * node_modules 가 닿지 않는 곳에서 실행되므로, 외부 의존을 하나라도 남기면 죽는다.
+ *
+ * `src/shared/` 에 두지 않는 이유: 렌더러도 shared 를 import 하는데, node 전용 모듈이
+ * 섞이면 vite 가 브라우저용으로 외부화하다가 런타임에 터진다. shared 는 순수 타입·상수만 둔다.
+ */
 export class ControlClient {
-  private ws: WebSocket | null = null
   private seq = 0
-  private readonly pending = new Map<
-    string,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
-  >()
 
   constructor(
     private readonly port: string,
@@ -32,87 +27,59 @@ export class ControlClient {
     return port && token ? new ControlClient(port, token) : null
   }
 
-  connect(): Promise<void> {
-    if (this.ws) return Promise.resolve()
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${this.port}`, {
-        headers: { 'x-waifu-token': this.token }
-      })
-      const timer = setTimeout(() => {
-        ws.terminate()
-        reject(new Error('제어 서버 접속 시간 초과'))
-      }, CONNECT_TIMEOUT_MS)
-
-      ws.on('open', () => {
-        clearTimeout(timer)
-        this.ws = ws
-        resolve()
-      })
-      ws.on('message', (data) => this.onMessage(String(data)))
-      ws.on('error', (err) => {
-        clearTimeout(timer)
-        this.failAll(err instanceof Error ? err : new Error(String(err)))
-        reject(err instanceof Error ? err : new Error(String(err)))
-      })
-      ws.on('close', () => {
-        this.ws = null
-        this.failAll(new Error('제어 서버 연결이 끊겼다'))
-      })
-    })
-  }
-
   /**
-   * 툴 한 번 호출. timeoutMs 는 호출마다 다르다 —
-   * 표정 바꾸기는 즉시지만 권한 승인은 사용자가 커피 타러 갔을 수도 있다.
+   * 툴 한 번 호출.
+   *
+   * timeoutMs 는 호출마다 다르다 — 표정 바꾸기는 즉시지만 권한 승인은 사용자가
+   * 커피 타러 갔을 수도 있다.
    */
-  async call(tool: WaifuToolName, args: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
-    await this.connect()
-    const ws = this.ws
-    if (!ws) throw new Error('제어 서버에 연결되지 않았다')
-
-    const id = `${tool}_${++this.seq}_${process.pid}`
-    const req: ControlRequest = { id, tool, args }
+  call(tool: WaifuToolName, args: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+    const payload: ControlRequest = { id: `${tool}_${++this.seq}_${process.pid}`, tool, args }
+    const body = Buffer.from(JSON.stringify(payload), 'utf8')
 
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`${tool} 응답 시간 초과 (${timeoutMs}ms)`))
-      }, timeoutMs)
-      this.pending.set(id, { resolve, reject, timer })
-      ws.send(JSON.stringify(req))
+      const req = request(
+        {
+          host: '127.0.0.1',
+          port: Number(this.port),
+          path: '/tool',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': body.byteLength,
+            'x-waifu-token': this.token
+          }
+        },
+        (res) => {
+          let text = ''
+          res.setEncoding('utf8')
+          res.on('data', (c: string) => (text += c))
+          res.on('end', () => {
+            if (res.statusCode !== 200) {
+              reject(new Error(`제어 서버 응답 ${res.statusCode}`))
+              return
+            }
+            let out: ControlResponse
+            try {
+              out = JSON.parse(text) as ControlResponse
+            } catch {
+              reject(new Error('제어 서버 응답을 해석할 수 없다'))
+              return
+            }
+            if (out.ok) resolve(out.result)
+            else reject(new Error(out.error ?? '제어 서버가 실패를 알렸다'))
+          })
+        }
+      )
+
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error(`${tool} 응답 시간 초과 (${timeoutMs}ms)`))
+      })
+      req.on('error', reject)
+      req.end(body)
     })
   }
 
-  close(): void {
-    this.failAll(new Error('클라이언트가 닫혔다'))
-    try {
-      this.ws?.close()
-    } catch {
-      /* 이미 닫혔으면 무시 */
-    }
-    this.ws = null
-  }
-
-  private onMessage(raw: string): void {
-    let msg: ControlResponse
-    try {
-      msg = JSON.parse(raw) as ControlResponse
-    } catch {
-      return
-    }
-    const entry = this.pending.get(msg.id)
-    if (!entry) return
-    this.pending.delete(msg.id)
-    clearTimeout(entry.timer)
-    if (msg.ok) entry.resolve(msg.result)
-    else entry.reject(new Error(msg.error ?? '제어 서버가 실패를 알렸다'))
-  }
-
-  private failAll(err: Error): void {
-    for (const [, entry] of this.pending) {
-      clearTimeout(entry.timer)
-      entry.reject(err)
-    }
-    this.pending.clear()
-  }
+  /** HTTP 는 요청마다 연결이 끝나므로 따로 닫을 것이 없다. 호출부 대칭을 위해 남겨둔다. */
+  close(): void {}
 }

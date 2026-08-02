@@ -24,10 +24,50 @@
         height: 100%;
         background: transparent;
       }
+      /* 자막은 캔버스 위에 겹친다. pointer-events:none 이 없으면 이 사각형이
+         알파 히트테스트를 우회해 클릭을 먹어버린다. */
+      #subtitle {
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        bottom: 12px;
+        pointer-events: none;
+        padding: 10px 14px;
+        border-radius: 12px;
+        background: rgba(20, 19, 26, 0.86);
+        color: #f0eef8;
+        font-family: 'Pretendard', 'Segoe UI', system-ui, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        opacity: 0;
+        transition: opacity 0.18s ease;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+      }
+      #subtitle.on {
+        opacity: 1;
+      }
+      /* 상태 점. 작업 중인지 한눈에 보이게 한다. */
+      #status {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.2s ease, background 0.2s ease;
+      }
+      #status.on {
+        opacity: 1;
+      }
     </style>
   </head>
   <body>
     <canvas id="avatar-canvas"></canvas>
+    <div id="status"></div>
+    <div id="subtitle"></div>
     <script type="module" src="./avatar/main.ts"></script>
   </body>
 </html>
