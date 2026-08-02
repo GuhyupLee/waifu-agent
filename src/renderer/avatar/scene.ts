@@ -25,6 +25,12 @@ const MAX_PITCH = 0.32
 /** 머리가 커서를 따라가는 속도. 클수록 즉각적이고, 낮으면 느긋하다. */
 const HEAD_STIFFNESS = 7
 
+/** 드래그 중 재생하는 전용 VRMA. 파일이 없으면 기존 드래그 동작으로 안전하게 폴백한다. */
+const DRAG_MOTION = 'mouse-tether-right'
+/** 손을 놓은 뒤 앵커 보정을 원점으로 되돌리는 짧은 완충 시간. */
+const DRAG_RELEASE_SECONDS = 0.32
+const DRAG_OFFSET_STIFFNESS = 14
+
 export interface LoadResult {
   hasExpressions: boolean
   hasLookAt: boolean
@@ -44,7 +50,22 @@ export class VrmScene {
 
   private mixer: THREE.AnimationMixer | null = null
   private currentAction: THREE.AnimationAction | null = null
+  private currentMotionName: string | null = null
+  private currentMotionLoop = false
   private readonly clips = new Map<string, THREE.AnimationClip>()
+
+  /**
+   * 커서와 손을 화면 좌표에서 붙이는 드래그 앵커.
+   * VRMA 는 자세를 만들고, 이 보정은 매 프레임 실제 손 본을 커서에 고정한다.
+   */
+  private dragAnchor: { x: number; y: number } | null = null
+  private dragGrip: THREE.Object3D | null = null
+  private readonly dragOffset = new THREE.Vector3()
+  private dragReleaseRemaining = 0
+  private dragRestoreMotion: { name: string; loop: boolean } | null = null
+  private readonly dragGripWorld = new THREE.Vector3()
+  private readonly dragTargetWorld = new THREE.Vector3()
+  private readonly dragProjected = new THREE.Vector3()
 
   /** 시선 타깃. 카메라 자식으로 붙여야 화면 좌표를 그대로 쓸 수 있다. */
   private readonly lookTarget = new THREE.Object3D()
@@ -204,6 +225,8 @@ export class VrmScene {
     if (this.currentAction && this.currentAction !== next) this.currentAction.fadeOut(0.3)
     next.fadeIn(0.3).play()
     this.currentAction = next
+    this.currentMotionName = name
+    this.currentMotionLoop = loop
 
     // VRMA 의 시선 트랙과 살아 있는 lookAt.target 이 서로 덮어쓴다.
     // 클립이 도는 동안에는 자동 추적을 끈다.
@@ -214,7 +237,46 @@ export class VrmScene {
   stopMotion(): void {
     this.currentAction?.fadeOut(0.3)
     this.currentAction = null
+    this.currentMotionName = null
+    this.currentMotionLoop = false
     if (this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
+  }
+
+  /**
+   * 전용 매달림 VRMA 를 켜고 오른손 끝을 현재 커서에 붙인다.
+   * 모션 또는 손 본이 없으면 false 를 돌려 기존 루트 진자만 사용하게 한다.
+   */
+  beginPointerDrag(x: number, y: number): boolean {
+    const vrm = this.vrm
+    if (!vrm || !this.hanger || !this.clips.has(DRAG_MOTION)) return false
+
+    const grip =
+      vrm.humanoid.getNormalizedBoneNode('rightMiddleDistal') ??
+      vrm.humanoid.getNormalizedBoneNode('rightHand')
+    if (!grip) return false
+
+    this.dragRestoreMotion =
+      this.currentMotionName && this.currentMotionName !== DRAG_MOTION
+        ? { name: this.currentMotionName, loop: this.currentMotionLoop }
+        : null
+    if (!this.playMotion(DRAG_MOTION, true)) return false
+
+    this.dragGrip = grip
+    this.dragAnchor = { x, y }
+    this.dragReleaseRemaining = 0
+    this.dragOffset.set(0, 0, 0)
+    return true
+  }
+
+  updatePointerDrag(x: number, y: number): void {
+    if (this.dragAnchor) this.dragAnchor = { x, y }
+  }
+
+  /** 손은 즉시 놓되, 몸과 카메라 안 위치는 짧게 감쇠시킨 뒤 이전 모션으로 돌아간다. */
+  endPointerDrag(): void {
+    if (!this.dragAnchor) return
+    this.dragAnchor = null
+    this.dragReleaseRemaining = DRAG_RELEASE_SECONDS
   }
 
   setEmotion(emotion: Emotion, weight = 1): void {
@@ -257,11 +319,23 @@ export class VrmScene {
     const delta = this.clock.getDelta()
     this.elapsed += delta
 
+    if (!this.dragAnchor && this.dragOffset.lengthSq() > 1e-10) {
+      this.dragOffset.multiplyScalar(Math.exp(-DRAG_OFFSET_STIFFNESS * delta))
+    }
+    if (this.dragReleaseRemaining > 0) {
+      this.dragReleaseRemaining -= delta
+      if (this.dragReleaseRemaining <= 0) this.finishPointerDrag()
+    }
+
     this.updateHead(delta)
     this.hang.update(delta)
     if (this.hanger) {
       this.hanger.rotation.z = this.hang.swing
-      this.hanger.position.y = this.hangerRestY - this.hang.droop
+      this.hanger.position.set(
+        this.dragOffset.x,
+        this.hangerRestY - this.hang.droop + this.dragOffset.y,
+        this.dragOffset.z
+      )
     }
 
     // 순서가 중요하다. vrm.update 안의 humanoid.update() 가 정규화 본을 실제 본으로
@@ -278,6 +352,9 @@ export class VrmScene {
     }
     this.applyExpressions(delta)
     this.vrm?.update(delta)
+
+    // 믹서와 humanoid 복사가 끝난 실제 손 위치를 사용해야 한 프레임도 미끄러지지 않는다.
+    this.pinDragGripToCursor()
 
     this.renderer.render(this.scene, this.camera)
 
@@ -362,6 +439,43 @@ export class VrmScene {
     return (this.pixel[3] ?? 0) > 8
   }
 
+  /**
+   * 손의 현재 clip-space 깊이를 유지한 채 커서 NDC 를 같은 월드 평면으로 역투영한다.
+   * 두 점의 차이만큼 hanger 전체를 옮기면 손은 고정되고 자식인 몸만 진자처럼 회전한다.
+   */
+  private pinDragGripToCursor(): void {
+    const anchor = this.dragAnchor
+    const grip = this.dragGrip
+    const hanger = this.hanger
+    if (!anchor || !grip || !hanger) return
+
+    const rect = this.canvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const ndcX = ((anchor.x - rect.left) / rect.width) * 2 - 1
+    const ndcY = -((anchor.y - rect.top) / rect.height) * 2 + 1
+
+    this.scene.updateMatrixWorld(true)
+    grip.getWorldPosition(this.dragGripWorld)
+    this.dragProjected.copy(this.dragGripWorld).project(this.camera)
+    if (!Number.isFinite(this.dragProjected.z)) return
+
+    this.dragTargetWorld.set(ndcX, ndcY, this.dragProjected.z).unproject(this.camera)
+    this.dragTargetWorld.sub(this.dragGripWorld)
+    this.dragOffset.add(this.dragTargetWorld)
+    hanger.position.add(this.dragTargetWorld)
+    hanger.updateMatrixWorld(true)
+  }
+
+  private finishPointerDrag(): void {
+    this.dragReleaseRemaining = 0
+    this.dragGrip = null
+    this.dragOffset.set(0, 0, 0)
+    const restore = this.dragRestoreMotion
+    this.dragRestoreMotion = null
+    if (restore && this.clips.has(restore.name)) this.playMotion(restore.name, restore.loop)
+    else this.stopMotion()
+  }
+
   private disposeVrm(): void {
     if (!this.vrm) return
     if (this.hanger) this.scene.remove(this.hanger)
@@ -370,6 +484,13 @@ export class VrmScene {
     this.hanger = null
     this.mixer = null
     this.currentAction = null
+    this.currentMotionName = null
+    this.currentMotionLoop = false
+    this.dragAnchor = null
+    this.dragGrip = null
+    this.dragOffset.set(0, 0, 0)
+    this.dragReleaseRemaining = 0
+    this.dragRestoreMotion = null
     this.clips.clear()
   }
 

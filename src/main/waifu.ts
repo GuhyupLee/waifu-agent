@@ -18,6 +18,7 @@ import type { AgentBackend } from './backends/types'
 import { ControlServer } from './control/server'
 import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
 import { buildSystemPrompt } from './persona/prompt'
+import { MemoryStore } from './persona/memory'
 import { synthesize } from './voice/tts'
 
 /**
@@ -40,6 +41,7 @@ export class Waifu {
   private readonly pending = new Map<string, (d: PermissionDecision) => void>()
   /** 렌더러가 실제로 로드에 성공한 모션 이름. 에이전트에게 이 목록으로만 답한다. */
   private motions: string[] = []
+  private readonly memory = new MemoryStore()
 
   constructor(
     private readonly config: WaifuConfig,
@@ -134,6 +136,7 @@ export class Waifu {
   async stop(): Promise<void> {
     await this.backend.stop()
     await this.control.stop()
+    this.memory.close()
   }
 
   // ─────────────────────── 에이전트 → 아바타 ───────────────────────
@@ -170,10 +173,19 @@ export class Waifu {
       case 'ask_permission':
         return this.askPermission(args)
 
-      case 'remember':
-      case 'recall':
-        // Phase 6. 지금 성공한 척하면 에이전트가 기억이 저장된 줄 알고 행동한다.
-        throw new Error('기억 기능은 아직 구현되지 않았다')
+      case 'remember': {
+        const key = String(args.key ?? '').trim()
+        const value = String(args.value ?? '')
+        this.memory.remember(key, value)
+        return `기억했다: ${key}`
+      }
+
+      case 'recall': {
+        const found = this.memory.recall(String(args.query ?? ''))
+        if (found.length === 0) return '해당하는 기억이 없다.'
+        // 에이전트가 읽을 것이므로 사람이 읽는 형태로 준다.
+        return found.map((m) => `- ${m.key}: ${m.value}`).join('\n')
+      }
 
       default:
         throw new Error(`알 수 없는 툴: ${tool}`)

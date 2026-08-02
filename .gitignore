@@ -5,11 +5,13 @@ release/
 *.log
 *.tsbuildinfo
 
-# 사용자 데이터 — 모델/모션 에셋은 라이선스가 제각각이라 커밋하지 않는다
+# VRM 모델은 출처와 라이선스가 제각각이라 커밋하지 않는다. 사용자가 직접 넣는다.
 resources/models/*
 !resources/models/.gitkeep
-resources/motions/*
-!resources/motions/.gitkeep
+
+# 모션(.vrma)은 이 프로젝트가 직접 생성한 자산이므로 커밋한다.
+# 이게 없으면 클론한 사람은 T 포즈만 보게 된다.
+# 재생성: npm run motions:generate / 검증: npm run motions:verify
 
 # 런타임에 생성되는 사용자 설정 (waifu.config.example.json 이 템플릿)
 waifu.config.json

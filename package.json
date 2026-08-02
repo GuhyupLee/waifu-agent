@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "start": "electron-vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "motions:generate": "node scripts/generate-vrma-library.mjs",
+    "motions:verify": "node scripts/verify-vrma-library.mjs"
   },
   "build": {
     "appId": "com.waifu.agent",

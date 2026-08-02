@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
-import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen } from 'electron'
 import { IPC } from '@shared/protocol'
 import type { AvatarEvent, WaifuConfig } from '@shared/protocol'
 import { applyOverlaySwitches, createAvatarWindow, setAvatarInteractive } from './windows/avatarWindow'
@@ -22,6 +22,7 @@ let lastFpsLog = 0
 
 /** 드래그 중에는 커서가 실루엣을 벗어나도 클릭 통과로 되돌리면 안 된다. */
 let dragging = false
+let motionLogTimer: NodeJS.Timeout | null = null
 
 function registerIpc(): void {
   ipcMain.on(IPC.avatarEvent, (_e, event: AvatarEvent) => {
@@ -73,9 +74,14 @@ function registerIpc(): void {
 
       case 'motions':
         waifu?.setMotions(event.names)
-        process.stdout.write(
-          `[avatar] 재생 가능 모션 ${event.names.length}개: ${event.names.join(', ') || '(없음)'}\n`
-        )
+        // 모션 하나가 로드될 때마다 이벤트가 온다. 54개면 로그가 54줄이 된다.
+        // 잠잠해진 뒤 한 번만 찍는다.
+        if (motionLogTimer) clearTimeout(motionLogTimer)
+        motionLogTimer = setTimeout(() => {
+          process.stdout.write(
+            `[avatar] 재생 가능 모션 ${event.names.length}개: ${event.names.join(', ') || '(없음)'}\n`
+          )
+        }, 500)
         break
 
       case 'recording':
@@ -96,7 +102,23 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.configGet, () => loadConfig())
-  ipcMain.handle(IPC.configSet, (_e, patch: Partial<WaifuConfig>) => saveConfig(patch))
+  ipcMain.handle(IPC.configSet, (_e, patch: Partial<WaifuConfig>) => {
+    const next = saveConfig(patch)
+    // 모델 경로가 바뀌었으면 즉시 갈아끼운다. 재시작을 요구할 이유가 없다.
+    if (patch.avatar?.modelPath !== undefined && avatarWindow && !avatarWindow.isDestroyed()) {
+      sendModel(avatarWindow, next)
+    }
+    return next
+  })
+
+  ipcMain.handle(IPC.pickModel, async () => {
+    const res = await dialog.showOpenDialog({
+      title: '아바타 모델 고르기',
+      properties: ['openFile'],
+      filters: [{ name: 'VRM / FBX', extensions: ['vrm', 'fbx'] }]
+    })
+    return res.canceled ? null : (res.filePaths[0] ?? null)
+  })
 
   ipcMain.on(IPC.sendMessage, (_e, text: string) => waifu?.send(text))
   ipcMain.on(IPC.interrupt, () => waifu?.interrupt())

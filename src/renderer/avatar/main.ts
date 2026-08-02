@@ -71,12 +71,14 @@ canvas.addEventListener('mousedown', (e) => {
   dragging = true
   lastScreen = { x: e.screenX, y: e.screenY }
   scene.hang.grab()
+  scene.beginPointerDrag(e.clientX, e.clientY)
   waifu.sendAvatarEvent({ type: 'drag-start' })
 })
 
 window.addEventListener('mousemove', (e) => {
   scene.setPointer({ x: e.clientX, y: e.clientY })
   if (!dragging) return
+  scene.updatePointerDrag(e.clientX, e.clientY)
   const dx = e.screenX - lastScreen.x
   const dy = e.screenY - lastScreen.y
   lastScreen = { x: e.screenX, y: e.screenY }
@@ -90,6 +92,7 @@ window.addEventListener('mouseup', () => {
   if (!dragging) return
   dragging = false
   scene.hang.release()
+  scene.endPointerDrag()
   waifu.sendAvatarEvent({ type: 'drag-end' })
 })
 

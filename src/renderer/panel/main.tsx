@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { BackendEvent, PanelEvent, PermissionRequest, WaifuApi } from '@shared/protocol'
+import { Settings } from './Settings'
 
 declare global {
   interface Window {
@@ -22,6 +23,7 @@ function Panel(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   /** 승인 대기 중인 요청. 훅이 응답을 기다리며 툴 실행을 붙잡고 있다. */
   const [permission, setPermission] = useState<PermissionRequest | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
   /** 스트리밍 중인 응답은 마지막 줄에 계속 이어 붙인다. */
   const streaming = useRef(false)
 
@@ -85,8 +87,15 @@ function Panel(): React.JSX.Element {
     window.waifu.sendMessage(text)
   }
 
+  if (showSettings) return <Settings onClose={() => setShowSettings(false)} />
+
   return (
     <div style={S.root}>
+      <div style={S.topbar}>
+        <button style={S.iconButton} onClick={() => setShowSettings(true)} title="설정">
+          설정
+        </button>
+      </div>
       <div style={S.log}>
         {lines.map((l) => (
           <div key={l.id} style={{ ...S.line, ...S.who[l.who] }}>
@@ -150,6 +159,17 @@ function Panel(): React.JSX.Element {
 
 const S = {
   root: { display: 'flex', flexDirection: 'column', height: '100%' },
+  topbar: { display: 'flex', justifyContent: 'flex-end', padding: '8px 12px 0' },
+  iconButton: {
+    background: 'transparent',
+    color: '#8b869e',
+    border: '1px solid #322f45',
+    borderRadius: '8px',
+    padding: '3px 10px',
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: '12px'
+  },
   log: { flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px' },
   line: { padding: '8px 12px', borderRadius: '10px', whiteSpace: 'pre-wrap', lineHeight: 1.5 },
   who: {
