@@ -21,7 +21,12 @@
     "engineUrl": "http://127.0.0.1:10101",
     "speakerId": 0,
     "speedScale": 1,
-    "sttHotkey": "Alt+Space"
+    "sttHotkey": "Alt+Space",
+    "stt": {
+      "whisperPath": "",
+      "modelPath": "",
+      "language": "ko"
+    }
   },
   "persona": {
     "name": "ミオ",

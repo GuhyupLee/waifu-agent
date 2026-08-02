@@ -16,6 +16,7 @@ import type { AgentBackend } from './backends/types'
 import { ControlServer } from './control/server'
 import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
 import { buildSystemPrompt } from './persona/prompt'
+import { synthesize } from './voice/tts'
 
 /**
  * 백엔드 · 제어 서버 · 아바타 · 패널을 잇는 중심.
@@ -106,18 +107,8 @@ export class Waifu {
 
   private async onTool(tool: WaifuToolName, args: Record<string, unknown>): Promise<unknown> {
     switch (tool) {
-      case 'waifu_say': {
-        const id = randomUUID()
-        this.toAvatar({
-          type: 'say',
-          id,
-          text: String(args.text ?? ''),
-          ...(args.emotion ? { emotion: args.emotion as Emotion } : {}),
-          ...(args.motion ? { motion: String(args.motion) } : {})
-        })
-        // TTS 는 Phase 4 에서 붙는다. 지금은 자막만 띄우고 바로 돌려준다.
-        return 'ok'
-      }
+      case 'waifu_say':
+        return this.say(args)
 
       case 'waifu_express':
         this.toAvatar({
@@ -153,6 +144,46 @@ export class Waifu {
 
       default:
         throw new Error(`알 수 없는 툴: ${tool}`)
+    }
+  }
+
+  /**
+   * 말하기. 자막은 항상 띄우고, 음성은 가능할 때만 붙인다.
+   *
+   * TTS 가 실패해도 발화 자체를 실패시키지 않는다 — 엔진이 안 떠 있다고 대화가
+   * 멈추면 안 된다. 대신 에이전트에게는 무음이었다고 알려준다. 조용히 성공한 척하면
+   * 에이전트는 자기 말이 들린 줄 안다.
+   */
+  private async say(args: Record<string, unknown>): Promise<string> {
+    const id = randomUUID()
+    const text = String(args.text ?? '')
+    const speech = typeof args.speech_ja === 'string' ? args.speech_ja.trim() : ''
+
+    const cmd: AvatarCommand = {
+      type: 'say',
+      id,
+      text,
+      ...(args.emotion ? { emotion: args.emotion as Emotion } : {}),
+      ...(args.motion ? { motion: String(args.motion) } : {})
+    }
+
+    if (!this.config.voice.enabled || !speech) {
+      this.toAvatar(cmd)
+      return this.config.voice.enabled ? 'ok (speech_ja 가 없어 무음 자막만 띄웠다)' : 'ok (음성 꺼짐)'
+    }
+
+    try {
+      const { audio, visemes } = await synthesize(speech, {
+        engineUrl: this.config.voice.engineUrl,
+        speakerId: this.config.voice.speakerId,
+        speedScale: this.config.voice.speedScale
+      })
+      this.toAvatar({ ...cmd, audio, visemes })
+      return 'ok'
+    } catch (err) {
+      process.stderr.write(`[voice] 합성 실패: ${String(err)}\n`)
+      this.toAvatar(cmd)
+      return `ok (음성 합성 실패로 자막만 띄웠다: ${(err as Error).message})`
     }
   }
 

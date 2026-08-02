@@ -99,6 +99,13 @@ export type AvatarCommand =
   | { type: 'status'; state: AgentState }
   | { type: 'stop-speaking' }
   | { type: 'set-scale'; scale: number }
+  /**
+   * 푸시투토크 녹음 토글.
+   *
+   * Electron 의 globalShortcut 은 키를 뗀 시점을 알려주지 않으므로 "누르고 있는 동안"이
+   * 아니라 토글로 동작한다. 마이크 접근이 렌더러에만 있어서 녹음 자체는 저쪽에서 한다.
+   */
+  | { type: 'record'; on: boolean }
 
 // ─────────────────────── 아바타 -> main ───────────────────────
 
@@ -131,6 +138,10 @@ export type AvatarEvent =
   | { type: 'model-loaded'; ok: false; error: string }
   | { type: 'fps'; value: number }
   | { type: 'clicked' }
+  /** 녹음이 끝났다. 16kHz 모노 WAV 를 base64 로 싣는다. 소리가 없었으면 null. */
+  | { type: 'recorded'; wavBase64: string | null }
+  /** 녹음 상태 변화. UI 표시용. */
+  | { type: 'recording'; on: boolean }
 
 // ─────────────────────── 에이전트 백엔드 이벤트 ───────────────────────
 
@@ -230,6 +241,20 @@ export interface WaifuConfig {
     speedScale: number
     /** STT 푸시투토크 핫키 (Electron accelerator 문법). */
     sttHotkey: string
+    /**
+     * 음성 인식. whisper.cpp 를 쓴다.
+     *
+     * 바이너리와 모델은 앱이 받지 않는다 — 사용자가 이미 가진 것을 가리키게 한다.
+     * 둘 중 하나라도 비어 있으면 음성 입력은 꺼진 상태로 둔다.
+     */
+    stt: {
+      /** whisper-cli.exe (또는 main.exe) 절대 경로. */
+      whisperPath: string
+      /** ggml 모델 파일 절대 경로. */
+      modelPath: string
+      /** whisper 의 -l 인자. 'auto' 도 된다. */
+      language: string
+    }
   }
   persona: {
     name: string
@@ -263,7 +288,8 @@ export const DEFAULT_CONFIG: WaifuConfig = {
     engineUrl: 'http://127.0.0.1:10101',
     speakerId: 0,
     speedScale: 1,
-    sttHotkey: 'Alt+Space'
+    sttHotkey: 'Alt+Space',
+    stt: { whisperPath: '', modelPath: '', language: 'ko' }
   },
   persona: {
     name: 'ミオ',

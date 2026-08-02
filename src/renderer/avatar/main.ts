@@ -1,5 +1,7 @@
 import type { AvatarCommand, WaifuApi } from '@shared/protocol'
 import { VrmScene } from './scene'
+import { SpeechPlayer } from './speech'
+import { Recorder } from './recorder'
 
 declare global {
   interface Window {
@@ -14,6 +16,8 @@ const subtitleEl = document.getElementById('subtitle')
 const statusEl = document.getElementById('status')
 
 const scene = new VrmScene(canvas)
+const speech = new SpeechPlayer()
+const recorder = new Recorder()
 const waifu = window.waifu
 
 /** 자막을 띄운다. 글자 수에 비례해 머무는 시간을 늘린다 — 긴 말이 순식간에 사라지면 못 읽는다. */
@@ -152,14 +156,38 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
       showSubtitle(cmd.text)
       if (cmd.emotion) scene.setEmotion(cmd.emotion)
       if (cmd.motion) scene.playMotion(cmd.motion, false)
-      // TTS 는 Phase 4. 지금은 자막만 뜨고 입은 움직이지 않는다.
+      if (cmd.audio && cmd.visemes) {
+        speech.play(cmd.audio, cmd.visemes, () => {
+          scene.setViseme('sil', 0)
+          waifu.sendAvatarEvent({ type: 'speech-end', id: cmd.id })
+        })
+      }
       break
 
     case 'status':
       showStatus(cmd.state)
       break
 
+    case 'record':
+      if (cmd.on) {
+        try {
+          await recorder.start()
+          waifu.sendAvatarEvent({ type: 'recording', on: true })
+          showSubtitle('🎤 듣는 중…')
+        } catch (err) {
+          // 마이크 권한이 없거나 장치가 없는 흔한 경우. 조용히 실패하면 왜 안 되는지 모른다.
+          showSubtitle(`마이크를 쓸 수 없다: ${(err as Error).message}`)
+          waifu.sendAvatarEvent({ type: 'recording', on: false })
+        }
+      } else if (recorder.recording) {
+        const wavBase64 = await recorder.stop()
+        waifu.sendAvatarEvent({ type: 'recording', on: false })
+        waifu.sendAvatarEvent({ type: 'recorded', wavBase64 })
+      }
+      break
+
     case 'stop-speaking':
+      speech.stop()
       scene.setViseme('sil', 0)
       break
 
@@ -184,6 +212,13 @@ function tick(): void {
   // 드래그 이동량을 물리에 밀어 넣는다. 등속으로 끌면 흔들리지 않고, 방향을 꺾을 때 흔들린다.
   scene.hang.push(dragDelta.x, dragDelta.y, delta)
   dragDelta = { x: 0, y: 0 }
+
+  // 입모양은 오디오의 재생 위치에서 뽑는다. 벽시계로 하면 재생이 조금만 늦게
+  // 시작해도 끝까지 어긋난 채로 간다.
+  if (speech.speaking) {
+    const { viseme, weight } = speech.sample()
+    scene.setViseme(viseme, weight)
+  }
 
   const { pointerOverAvatar } = scene.render()
 

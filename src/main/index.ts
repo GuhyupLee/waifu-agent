@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
-import { app, BrowserWindow, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron'
 import { IPC } from '@shared/protocol'
 import type { AvatarEvent, WaifuConfig } from '@shared/protocol'
 import { applyOverlaySwitches, createAvatarWindow, setAvatarInteractive } from './windows/avatarWindow'
@@ -9,6 +9,7 @@ import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
 import { assetUrl, handleAssetProtocol, registerAssetScheme } from './assetProtocol'
 import { loadConfig, saveConfig } from './config/store'
 import { Waifu } from './waifu'
+import { checkStt, transcribe } from './voice/stt'
 import type { PermissionDecision } from '@shared/protocol'
 
 // 둘 다 app 준비 **전에** 걸어야 한다. 준비 후에 부르면 조용히 무시된다.
@@ -77,6 +78,14 @@ function registerIpc(): void {
         )
         break
 
+      case 'recording':
+        recording = event.on
+        break
+
+      case 'recorded':
+        void handleRecorded(event.wavBase64)
+        break
+
       case 'clicked':
         panelWindow?.show()
         break
@@ -94,6 +103,52 @@ function registerIpc(): void {
   ipcMain.on(IPC.permissionRespond, (_e, p: { id: string; decision: PermissionDecision }) =>
     waifu?.resolvePermission(p.id, p.decision)
   )
+}
+
+/** 녹음 중인지. 핫키가 토글이라 상태를 들고 있어야 한다. */
+let recording = false
+
+/**
+ * 푸시투토크 핫키를 건다.
+ *
+ * Electron 의 globalShortcut 은 키를 뗀 시점을 주지 않으므로 "누르고 있는 동안"이
+ * 아니라 토글이다. 한 번 눌러 말하고 다시 눌러 보낸다.
+ */
+function registerPushToTalk(config: WaifuConfig): void {
+  const avail = checkStt(config.voice.stt)
+  if (!avail.ok) {
+    process.stdout.write(`[voice] 음성 입력 꺼짐 — ${avail.reason}\n`)
+    return
+  }
+  const ok = globalShortcut.register(config.voice.sttHotkey, () => {
+    const win = avatarWindow
+    if (!win || win.isDestroyed()) return
+    win.webContents.send(IPC.avatarCommand, { type: 'record', on: !recording })
+  })
+  process.stdout.write(
+    ok
+      ? `[voice] 푸시투토크 핫키 ${config.voice.sttHotkey} 등록됨 (토글)\n`
+      : `[voice] 핫키 ${config.voice.sttHotkey} 등록 실패 — 다른 앱이 쓰고 있다\n`
+  )
+}
+
+/** 녹음된 음성을 받아쓰고 그대로 한 턴으로 보낸다. */
+async function handleRecorded(wavBase64: string | null): Promise<void> {
+  if (!wavBase64) {
+    process.stdout.write('[voice] 녹음된 소리가 없다\n')
+    return
+  }
+  try {
+    const text = await transcribe(wavBase64, loadConfig().voice.stt)
+    if (!text) {
+      process.stdout.write('[voice] 받아쓴 내용이 비었다\n')
+      return
+    }
+    process.stdout.write(`[voice] 받아쓰기: ${text}\n`)
+    waifu?.send(text)
+  } catch (err) {
+    process.stderr.write(`[voice] 받아쓰기 실패: ${String(err)}\n`)
+  }
 }
 
 /**
@@ -215,6 +270,7 @@ void app.whenReady().then(async () => {
   process.stdout.write(`[config] 퍼소나=${config.persona.name} 권한=${config.permission.mode}\n`)
   createWindows(config)
   gazeTimer = startGazeTracking()
+  registerPushToTalk(config)
 
   waifu = new Waifu(
     config,
@@ -237,6 +293,8 @@ void app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   if (gazeTimer) clearInterval(gazeTimer)
+  // 핫키를 풀지 않으면 앱이 죽은 뒤에도 다른 앱이 그 조합을 못 쓰는 경우가 있다.
+  globalShortcut.unregisterAll()
   void waifu?.stop()
 })
 
