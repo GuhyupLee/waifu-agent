@@ -33,6 +33,9 @@ function showSubtitle(text: string): void {
   )
 }
 
+/** 화면을 가로질러 갈 때 재생할 모션. 앞에 있는 것부터 찾아 쓴다. */
+const ROAM_MOTIONS = ['walk', 'happy-bounce', 'dance-bounce', 'jump']
+
 const STATUS_COLOR: Record<string, string> = {
   idle: '',
   thinking: '#f0c674',
@@ -214,6 +217,17 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
 
     case 'wake':
       scene.wake()
+      break
+
+    case 'roam':
+      if (cmd.moving) {
+        // 아직 walk 모션이 없다. 있으면 그걸 쓰고, 없으면 이동감이 있는 것으로 대체한다.
+        // 라이브러리에 walk 가 추가되면 코드를 안 고쳐도 자동으로 그쪽을 쓴다.
+        const motion = ROAM_MOTIONS.find((m) => scene.motionNames.includes(m))
+        if (motion) scene.playMotion(motion, true)
+      } else {
+        scene.stopMotion()
+      }
       break
 
     case 'stop-speaking':

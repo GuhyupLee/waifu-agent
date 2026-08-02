@@ -46,8 +46,12 @@ export function effectiveMotionLoop(name: string, requested: boolean): boolean {
   return requested && LOOPABLE_MOTIONS.has(name)
 }
 
+export function isInteractiveMotion(name: string): boolean {
+  return name.startsWith('mouse-tether-')
+}
+
 export function motionRole(name: string, loop: boolean): MotionRole {
-  if (name.startsWith('mouse-tether-')) return 'interactive'
+  if (isInteractiveMotion(name)) return 'interactive'
   if (loop && AMBIENT_POOL.some((entry) => entry.name === name)) return 'ambient'
   return loop ? 'sustained' : 'one-shot'
 }

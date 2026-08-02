@@ -111,6 +111,11 @@ export type AvatarCommand =
    * 몇 시간치 delta 를 한 번에 적분하면 머리카락이 날아간다.
    */
   | { type: 'wake' }
+  /**
+   * 화면을 가로질러 이동 중. 방향은 -1 왼쪽, +1 오른쪽, 0 제자리.
+   * 렌더러가 이동 모션을 재생하고 몸을 진행 방향으로 살짝 기울인다.
+   */
+  | { type: 'roam'; moving: boolean; direction: -1 | 0 | 1 }
 
 // ─────────────────────── 아바타 -> main ───────────────────────
 
@@ -345,7 +350,9 @@ export const WAIFU_TOOLS = [
   /** 작업 저널에 한 줄 남긴다. "어디까지 했어?" 에 답할 재료다. */
   'task_note',
   /** 다른 작업들의 상태를 본다. */
-  'task_list'
+  'task_list',
+  /** 아바타를 다른 모니터로 옮긴다. */
+  'waifu_move'
 ] as const
 
 export type WaifuToolName = (typeof WAIFU_TOOLS)[number]

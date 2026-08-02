@@ -4,6 +4,7 @@ import {
   DEFAULT_AMBIENT_MOTION,
   ambientHoldSeconds,
   effectiveMotionLoop,
+  isInteractiveMotion,
   motionRole,
   pickAmbientMotion,
   transitionSeconds
@@ -15,6 +16,8 @@ describe('motion transition graph', () => {
     expect(motionRole('wave-right', false)).toBe('one-shot')
     expect(motionRole('dance-sway', true)).toBe('sustained')
     expect(motionRole('mouse-tether-right', true)).toBe('interactive')
+    expect(isInteractiveMotion('mouse-tether-float-curl')).toBe(true)
+    expect(isInteractiveMotion('wave-right')).toBe(false)
   })
 
   it('never loops a clip whose authored boundary is not seamless', () => {

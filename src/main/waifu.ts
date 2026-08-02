@@ -22,6 +22,15 @@ import { MemoryStore } from './persona/memory'
 import { TaskStore } from './tasks/store'
 import { SnapshotStore } from './safety/snapshots'
 import { clampRemotePermission } from './discord/bot'
+import {
+  DEFAULT_ROAM,
+  currentDisplayIndex,
+  orderedDisplays,
+  resolveTarget,
+  restingSpot,
+  roamTo
+} from './roaming'
+import type { RoamHandle } from './roaming'
 import type { PermissionMode } from '@shared/protocol'
 import {
   extractCommand,
@@ -56,6 +65,8 @@ export class Waifu {
   private readonly memory = new MemoryStore()
   private readonly tasks = new TaskStore()
   private readonly snapshots = new SnapshotStore()
+  /** 진행 중인 이동. 새 이동이 들어오면 취소한다 — 겹치면 창이 떨린다. */
+  private roaming: RoamHandle | null = null
   /** 지금 턴이 속한 작업. 에이전트의 task_* 툴은 이걸 대상으로 한다. */
   private current: Task | null = null
 
@@ -274,6 +285,14 @@ export class Waifu {
         })
         return 'ok'
 
+      case 'waifu_move': {
+        const to = String(args.to ?? 'cursor')
+        if (to !== 'left' && to !== 'right' && to !== 'cursor') {
+          throw new Error(`알 수 없는 방향: ${to}`)
+        }
+        return this.moveAvatar(to)
+      }
+
       case 'waifu_status':
         this.toAvatar({ type: 'status', state: args.state as never })
         // 툴 설명에서 "사용 가능한 모션은 여기서 알려준다"고 약속했다.
@@ -374,6 +393,50 @@ export class Waifu {
       this.toAvatar(cmd)
       return `ok (음성 합성 실패로 자막만 띄웠다: ${(err as Error).message})`
     }
+  }
+
+  /**
+   * 아바타를 다른 모니터로 옮긴다.
+   *
+   * 이동이 끝날 때까지 기다렸다가 돌려준다 — 에이전트가 "갔어" 라고 말한 뒤에도
+   * 아직 걷고 있으면 말과 그림이 어긋난다.
+   */
+  private moveAvatar(to: 'left' | 'right' | 'cursor'): Promise<string> {
+    const win = this.avatar()
+    if (!win || win.isDestroyed()) return Promise.resolve('아바타 창이 없다.')
+
+    const display = resolveTarget(win, { kind: to } as never)
+    if (!display) return Promise.resolve('갈 수 있는 모니터를 찾지 못했다.')
+
+    const before = currentDisplayIndex(win)
+    const bounds = win.getBounds()
+    const destination = restingSpot(display, { width: bounds.width, height: bounds.height }, DEFAULT_ROAM.margin)
+
+    // 이미 그 자리면 걷는 시늉을 할 이유가 없다.
+    if (Math.abs(destination.x - bounds.x) < 2 && Math.abs(destination.y - bounds.y) < 2) {
+      return Promise.resolve(
+        orderedDisplays().length <= 1 ? '모니터가 하나뿐이라 이동하지 않았다.' : '이미 거기 있다.'
+      )
+    }
+
+    // 이전 이동이 남아 있으면 취소한다. 두 이동이 겹치면 창이 떨린다.
+    this.roaming?.cancel()
+
+    return new Promise<string>((resolve) => {
+      this.roaming = roamTo(win, destination, {
+        onStart: (direction) => this.toAvatar({ type: 'roam', moving: true, direction }),
+        onDone: () => {
+          this.roaming = null
+          this.toAvatar({ type: 'roam', moving: false, direction: 0 })
+          const after = currentDisplayIndex(win)
+          resolve(
+            before === after
+              ? '같은 모니터 안에서 자리를 옮겼다.'
+              : `${before + 1}번 모니터에서 ${after + 1}번으로 옮겼다.`
+          )
+        }
+      })
+    })
   }
 
   /**

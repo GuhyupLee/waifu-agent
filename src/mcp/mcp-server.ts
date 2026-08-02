@@ -168,6 +168,22 @@ server.registerTool(
 )
 
 server.registerTool(
+  'waifu_move',
+  {
+    title: '다른 모니터로 이동',
+    description:
+      '아바타를 다른 모니터로 옮긴다. 사용자가 "이리 와" 라고 하거나, 지금 작업 중인 화면 쪽으로 ' +
+      '가는 게 자연스러울 때 쓴다. 모니터가 하나뿐이면 아무 일도 일어나지 않는다.',
+    inputSchema: {
+      to: z
+        .enum(['left', 'right', 'cursor'])
+        .describe("cursor 는 마우스가 있는 모니터로 간다 — \"이리 와\" 에 해당한다.")
+    }
+  },
+  async (args) => call('waifu_move', args as Record<string, unknown>)
+)
+
+server.registerTool(
   'task_list',
   {
     title: '작업 목록',

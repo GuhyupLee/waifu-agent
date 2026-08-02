@@ -17,6 +17,7 @@ import {
   DEFAULT_AMBIENT_MOTION,
   ambientHoldSeconds,
   effectiveMotionLoop,
+  isInteractiveMotion,
   motionRole,
   pickAmbientMotion,
   transitionSeconds
@@ -52,6 +53,11 @@ interface MotionSnapshot {
   time: number
 }
 
+interface PendingMotionRequest {
+  name: string
+  loop: boolean
+}
+
 type MotionStartReason = 'request' | 'ambient' | 'interactive' | 'restore'
 
 export class VrmScene {
@@ -74,6 +80,9 @@ export class VrmScene {
   private resumeMotion: MotionSnapshot | null = null
   private ambientRemaining = 0
   private lookAtResumeRemaining = 0
+  private lastSwitchMixerTime = Number.NaN
+  /** 같은 mixer tick의 요청은 중간 포즈를 만들지 않고 마지막 하나만 다음 tick에 실행한다. */
+  private pendingMotionRequest: PendingMotionRequest | null = null
   /** fade가 끝난 action만 stop하여 급한 연속 전환에서도 weight가 튀지 않게 한다. */
   private readonly retiringActions = new Map<THREE.AnimationAction, number>()
   private readonly clips = new Map<string, THREE.AnimationClip>()
@@ -242,25 +251,25 @@ export class VrmScene {
   }
 
   get motionNames(): string[] {
-    return [...this.clips.keys()]
+    // tether는 포인터 좌표 제약과 함께만 의미가 있다. LLM이 일반 모션으로 부르지 못하게 숨긴다.
+    return [...this.clips.keys()].filter((name) => !isInteractiveMotion(name))
   }
 
   playMotion(name: string, requestedLoop: boolean): boolean {
     const clip = this.clips.get(name)
     if (!clip || !this.mixer) return false
-    // tether는 내부적으로 계속 도는 제약 포즈다. 외부에서 실수로 loop=false로 불러도
-    // LoopOnce 마지막 프레임에 interactive 상태가 고착되지 않게 항상 반복한다.
-    const loop = name.startsWith('mouse-tether-') || effectiveMotionLoop(name, requestedLoop)
+    if (isInteractiveMotion(name)) {
+      console.warn(`[avatar] '${name}'은 포인터 드래그 전용이라 일반 모션으로 재생하지 않는다.`)
+      return false
+    }
+    const loop = effectiveMotionLoop(name, requestedLoop)
     if (requestedLoop && !loop) {
       console.warn(`[avatar] '${name}'은 이음새 없는 반복용 모션이 아니므로 한 번만 재생한다.`)
     }
 
     // 대화 중 새 모션이 와도 손을 놓기 전까지는 tether 를 끊지 않는다. 마지막 요청을 복귀 대상으로 둔다.
     if (this.dragGrip && name !== DRAG_MOTION) {
-      const previousRestore = this.dragRestoreMotion
-      if (loop) this.resumeMotion = null
-      else if (!this.resumeMotion && previousRestore?.loop) this.resumeMotion = previousRestore
-      this.dragRestoreMotion = { name, loop, time: 0 }
+      this.queueMotionAfterDrag(name, loop)
       return true
     }
 
@@ -277,7 +286,15 @@ export class VrmScene {
     this.resumeMotion = null
     this.ambientRemaining = 0
     this.lookAtResumeRemaining = 0
+    this.pendingMotionRequest = null
     if (!previous && this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
+  }
+
+  private queueMotionAfterDrag(name: string, loop: boolean): void {
+    const previousRestore = this.dragRestoreMotion
+    if (loop) this.resumeMotion = null
+    else if (!this.resumeMotion && previousRestore?.loop) this.resumeMotion = previousRestore
+    this.dragRestoreMotion = { name, loop, time: 0 }
   }
 
   /**
@@ -293,6 +310,13 @@ export class VrmScene {
     const clip = this.clips.get(name)
     const mixer = this.mixer
     if (!clip || !mixer) return false
+
+    // play/fade 호출 직후에는 getEffectiveWeight()가 아직 이전 캐시(대개 1)를 돌려준다.
+    // 같은 tick의 일반 요청을 전부 실행하면 A/B/C가 동시에 weight 1로 튀므로 latest만 보류한다.
+    if (reason === 'request' && this.lastSwitchMixerTime === mixer.time) {
+      this.pendingMotionRequest = { name, loop }
+      return true
+    }
 
     const previous = this.currentAction
     const previousRole = this.currentMotionRole
@@ -348,6 +372,7 @@ export class VrmScene {
     this.currentMotionName = name
     this.currentMotionLoop = loop
     this.currentMotionRole = nextRole
+    this.lastSwitchMixerTime = mixer.time
     this.ambientRemaining =
       nextRole === 'ambient' ? ambientHoldSeconds(Math.random()) : Number.POSITIVE_INFINITY
 
@@ -408,6 +433,12 @@ export class VrmScene {
   }
 
   private updateMotionDirector(delta: number): void {
+    if (this.pendingMotionRequest && !this.dragGrip) {
+      const pending = this.pendingMotionRequest
+      this.pendingMotionRequest = null
+      this.switchMotion(pending.name, pending.loop, 'request')
+    }
+
     for (const [action, remaining] of this.retiringActions) {
       if (action === this.currentAction) {
         this.retiringActions.delete(action)
@@ -464,6 +495,11 @@ export class VrmScene {
       (this.currentMotionLoop && this.currentMotionName !== DRAG_MOTION
         ? this.currentSnapshot()
         : this.resumeMotion)
+    if (this.pendingMotionRequest) {
+      const pending = this.pendingMotionRequest
+      this.pendingMotionRequest = null
+      this.queueMotionAfterDrag(pending.name, pending.loop)
+    }
     // 단발 동작의 한가운데로 돌아가면 팔이 순간적으로 재개돼 어색하다. 드래그는 그 동작의
     // 복귀 loop를 보존하고, loop가 없으면 놓은 뒤 기본 생활 idle로 정착한다.
     if (!this.switchMotion(DRAG_MOTION, true, 'interactive')) return false
@@ -716,6 +752,8 @@ export class VrmScene {
     this.resumeMotion = null
     this.ambientRemaining = 0
     this.lookAtResumeRemaining = 0
+    this.lastSwitchMixerTime = Number.NaN
+    this.pendingMotionRequest = null
     this.retiringActions.clear()
     this.dragAnchor = null
     this.dragGrip = null
