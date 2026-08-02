@@ -366,6 +366,21 @@ export interface WaifuApi {
   getConfig(): Promise<WaifuConfig>
   setConfig(patch: Partial<WaifuConfig>): Promise<WaifuConfig>
   pickModel(): Promise<string | null>
+
+  /** 에이전트가 바꾼 파일 목록과 되돌리기. */
+  listChanges(): Promise<FileChange[]>
+  undoChange(id: string): Promise<{ ok: boolean; reason?: string }>
+}
+
+/** 되돌리기 UI 가 보여줄 한 건. */
+export interface FileChange {
+  id: string
+  path: string
+  at: number
+  toolName: string
+  /** 새로 만든 파일이면 되돌릴 원본이 없다. */
+  hasBackup: boolean
+  restoredAt: number | null
 }
 
 // ─────────────────────── IPC 채널명 ───────────────────────
@@ -387,5 +402,8 @@ export const IPC = {
   configGet: 'config:get',
   configSet: 'config:set',
   /** panel -> main (invoke), VRM/FBX 파일 선택 */
-  pickModel: 'avatar:pick-model'
+  pickModel: 'avatar:pick-model',
+  /** panel -> main (invoke), 파일 변경 이력과 되돌리기 */
+  changesList: 'safety:list',
+  changesUndo: 'safety:undo'
 } as const

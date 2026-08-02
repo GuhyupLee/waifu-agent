@@ -111,6 +111,21 @@ function registerIpc(): void {
     return next
   })
 
+  ipcMain.handle(IPC.changesList, () =>
+    (waifu?.recentSnapshots() ?? []).map((s) => ({
+      id: s.id,
+      path: s.path,
+      at: s.at,
+      toolName: s.toolName,
+      hasBackup: s.backupPath !== null,
+      restoredAt: s.restoredAt
+    }))
+  )
+
+  ipcMain.handle(IPC.changesUndo, (_e, id: string) =>
+    waifu?.restoreSnapshot(id) ?? { ok: false, reason: '아직 준비되지 않았다' }
+  )
+
   ipcMain.handle(IPC.pickModel, async () => {
     const res = await dialog.showOpenDialog({
       title: '아바타 모델 고르기',

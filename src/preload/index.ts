@@ -3,6 +3,7 @@ import { IPC } from '@shared/protocol'
 import type {
   AvatarCommand,
   AvatarEvent,
+  FileChange,
   PanelEvent,
   PermissionDecision,
   WaifuApi,
@@ -34,7 +35,11 @@ const api: WaifuApi = {
   getConfig: () => ipcRenderer.invoke(IPC.configGet) as Promise<WaifuConfig>,
   setConfig: (patch: Partial<WaifuConfig>) =>
     ipcRenderer.invoke(IPC.configSet, patch) as Promise<WaifuConfig>,
-  pickModel: () => ipcRenderer.invoke(IPC.pickModel) as Promise<string | null>
+  pickModel: () => ipcRenderer.invoke(IPC.pickModel) as Promise<string | null>,
+
+  listChanges: () => ipcRenderer.invoke(IPC.changesList) as Promise<FileChange[]>,
+  undoChange: (id: string) =>
+    ipcRenderer.invoke(IPC.changesUndo, id) as Promise<{ ok: boolean; reason?: string }>
 }
 
 contextBridge.exposeInMainWorld('waifu', api)

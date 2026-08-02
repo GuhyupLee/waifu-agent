@@ -20,6 +20,14 @@ import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
 import { buildSystemPrompt } from './persona/prompt'
 import { MemoryStore } from './persona/memory'
 import { TaskStore } from './tasks/store'
+import { SnapshotStore } from './safety/snapshots'
+import {
+  extractCommand,
+  extractFilePath,
+  findDangers,
+  isOverwritingTool,
+  isShellTool
+} from './safety/destructive'
 import type { Task, TaskOrigin, TaskState } from './tasks/store'
 import { synthesize } from './voice/tts'
 
@@ -45,6 +53,7 @@ export class Waifu {
   private motions: string[] = []
   private readonly memory = new MemoryStore()
   private readonly tasks = new TaskStore()
+  private readonly snapshots = new SnapshotStore()
   /** 지금 턴이 속한 작업. 에이전트의 task_* 툴은 이걸 대상으로 한다. */
   private current: Task | null = null
 
@@ -203,6 +212,21 @@ export class Waifu {
     await this.control.stop()
     this.memory.close()
     this.tasks.close()
+    this.snapshots.close()
+  }
+
+  /** 되돌리기 UI 용. 최근에 바뀐 파일들. */
+  recentSnapshots(): ReturnType<SnapshotStore['recent']> {
+    return this.snapshots.recent()
+  }
+
+  restoreSnapshot(id: string): { ok: boolean; reason?: string } {
+    const result = this.snapshots.restore(id)
+    if (result.ok && this.current) {
+      const snap = this.snapshots.get(id)
+      this.tasks.append(this.current.id, 'note', `되돌림: ${snap?.path ?? id}`)
+    }
+    return result
   }
 
   // ─────────────────────── 에이전트 → 아바타 ───────────────────────
@@ -338,13 +362,8 @@ export class Waifu {
    */
   private askPermission(args: Record<string, unknown>): Promise<PermissionDecision> {
     const toolName = String(args.toolName ?? 'unknown')
+    const input = args.input
 
-    if (this.config.permission.mode === 'auto') {
-      return Promise.resolve({ behavior: 'allow' })
-    }
-    if (this.config.permission.autoApprove.includes(toolName)) {
-      return Promise.resolve({ behavior: 'allow' })
-    }
     if (this.config.permission.mode === 'readonly') {
       return Promise.resolve({
         behavior: 'deny',
@@ -352,11 +371,33 @@ export class Waifu {
       })
     }
 
+    // 파일을 통째로 바꾸는 툴은 실행 전에 원본을 떠둔다.
+    // 훅이 실행을 막고 있는 동안 일어나므로 모델이 우회할 수 없다.
+    if (isOverwritingTool(toolName)) {
+      const path = extractFilePath(input)
+      if (path) this.snapshots.capture(path, toolName, this.current?.id ?? null)
+    }
+
+    // 되돌리기 어려운 셸 명령은 '맡겨두기' 든 자동 승인 목록이든 무조건 물어본다.
+    // 여기서 뚫리면 안전망이 아니라 장식이다.
+    const dangers = isShellTool(toolName) ? findDangers(extractCommand(input)) : []
+
+    if (dangers.length === 0) {
+      if (this.config.permission.mode === 'auto') return Promise.resolve({ behavior: 'allow' })
+      if (this.config.permission.autoApprove.includes(toolName)) {
+        return Promise.resolve({ behavior: 'allow' })
+      }
+    }
+
     const request: PermissionRequest = {
       id: randomUUID(),
       toolName,
-      input: args.input,
-      ...(typeof args.reason === 'string' ? { reason: args.reason } : {})
+      input,
+      ...(dangers.length > 0
+        ? { reason: `되돌리기 어렵다 — ${dangers.map((d) => d.reason).join(', ')}` }
+        : typeof args.reason === 'string'
+          ? { reason: args.reason }
+          : {})
     }
 
     return new Promise<PermissionDecision>((resolve) => {

@@ -13,6 +13,15 @@ import {
 import type { Emotion, Viseme } from '@shared/protocol'
 import { applyIdlePose, clampAngle, damp, fitCameraToObject } from './pose'
 import { HangPhysics } from './hang'
+import {
+  DEFAULT_AMBIENT_MOTION,
+  ambientHoldSeconds,
+  effectiveMotionLoop,
+  motionRole,
+  pickAmbientMotion,
+  transitionSeconds
+} from './motionTransitions'
+import type { MotionRole } from './motionTransitions'
 
 /** 우리 Emotion 은 VRM 1.0 프리셋 이름과 1:1 이다. v0 의 joy/fun/sorrow 는 3.x 에 없다. */
 const EMOTION_EXPRESSIONS: readonly Emotion[] = ['happy', 'angry', 'sad', 'relaxed', 'surprised']
@@ -37,6 +46,14 @@ export interface LoadResult {
   presets: string[]
 }
 
+interface MotionSnapshot {
+  name: string
+  loop: boolean
+  time: number
+}
+
+type MotionStartReason = 'request' | 'ambient' | 'interactive' | 'restore'
+
 export class VrmScene {
   readonly scene = new THREE.Scene()
   readonly camera: THREE.PerspectiveCamera
@@ -52,6 +69,12 @@ export class VrmScene {
   private currentAction: THREE.AnimationAction | null = null
   private currentMotionName: string | null = null
   private currentMotionLoop = false
+  private currentMotionRole: MotionRole | null = null
+  /** 단발 동작이 끝난 뒤 이어서 재생할 이전 반복 동작. */
+  private resumeMotion: MotionSnapshot | null = null
+  private ambientRemaining = 0
+  /** fade가 끝난 action만 stop하여 급한 연속 전환에서도 weight가 튀지 않게 한다. */
+  private readonly retiringActions = new Map<THREE.AnimationAction, number>()
   private readonly clips = new Map<string, THREE.AnimationClip>()
 
   /**
@@ -62,7 +85,7 @@ export class VrmScene {
   private dragGrip: THREE.Object3D | null = null
   private readonly dragOffset = new THREE.Vector3()
   private dragReleaseRemaining = 0
-  private dragRestoreMotion: { name: string; loop: boolean; time: number } | null = null
+  private dragRestoreMotion: MotionSnapshot | null = null
   private refitAfterDrag = false
   private readonly dragGripWorld = new THREE.Vector3()
   private readonly dragTargetWorld = new THREE.Vector3()
@@ -171,7 +194,9 @@ export class VrmScene {
     this.vrm = vrm
     // 믹서는 반드시 vrm.scene 에 뿌리내려야 한다. 클립 트랙 이름이 `Normalized_<bone>.quaternion`
     // 인데 그 노드들이 vrm.scene 아래에 있기 때문이다. 다른 곳에 걸면 조용히 아무 일도 안 한다.
-    this.mixer = new THREE.AnimationMixer(vrm.scene)
+    const mixer = new THREE.AnimationMixer(vrm.scene)
+    mixer.addEventListener('finished', ({ action }) => this.handleMotionFinished(action))
+    this.mixer = mixer
 
     if (vrm.lookAt) vrm.lookAt.target = this.lookTarget
 
@@ -208,45 +233,44 @@ export class VrmScene {
     if (!first) throw new Error(`${name}: VRMA 에 애니메이션이 없다`)
 
     this.clips.set(name, createVRMAnimationClip(first as never, vrm))
+
+    // 첫 생활 idle이 도착하는 즉시 절차적 자세에서 VRMA 상태기로 넘긴다.
+    if (name === DEFAULT_AMBIENT_MOTION && !this.currentAction) {
+      this.switchMotion(name, true, 'ambient')
+    }
   }
 
   get motionNames(): string[] {
     return [...this.clips.keys()]
   }
 
-  playMotion(name: string, loop: boolean, forceDuringDrag = false): boolean {
+  playMotion(name: string, requestedLoop: boolean): boolean {
     const clip = this.clips.get(name)
     if (!clip || !this.mixer) return false
+    const loop = effectiveMotionLoop(name, requestedLoop)
 
     // 대화 중 새 모션이 와도 손을 놓기 전까지는 tether 를 끊지 않는다. 마지막 요청을 복귀 대상으로 둔다.
-    if (!forceDuringDrag && this.dragGrip && name !== DRAG_MOTION) {
+    if (this.dragGrip && name !== DRAG_MOTION) {
+      const previousRestore = this.dragRestoreMotion
+      if (loop) this.resumeMotion = null
+      else if (!this.resumeMotion && previousRestore?.loop) this.resumeMotion = previousRestore
       this.dragRestoreMotion = { name, loop, time: 0 }
       return true
     }
 
-    const next = this.mixer.clipAction(clip)
-    next.reset()
-    next.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
-    next.clampWhenFinished = !loop
-
-    if (this.currentAction && this.currentAction !== next) this.currentAction.fadeOut(0.3)
-    next.fadeIn(0.3).play()
-    this.currentAction = next
-    this.currentMotionName = name
-    this.currentMotionLoop = loop
-
-    // VRMA 의 시선 트랙과 살아 있는 lookAt.target 이 서로 덮어쓴다.
-    // 클립이 도는 동안에는 자동 추적을 끈다.
-    if (this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = false
-    return true
+    return this.switchMotion(name, loop, 'request')
   }
 
   stopMotion(): void {
-    this.currentAction?.fadeOut(0.3)
+    const previous = this.currentAction
+    if (previous) this.retireAction(previous, 0.32)
     this.currentAction = null
     this.currentMotionName = null
     this.currentMotionLoop = false
-    if (this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
+    this.currentMotionRole = null
+    this.resumeMotion = null
+    this.ambientRemaining = 0
+    if (!previous && this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
   }
 
   /**

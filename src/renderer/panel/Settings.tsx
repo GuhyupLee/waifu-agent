@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { BackendKind, PermissionMode, WaifuConfig } from '@shared/protocol'
+import type { BackendKind, FileChange, PermissionMode, WaifuConfig } from '@shared/protocol'
 
 /**
  * 권한 모드는 UI 에서 친숙한 이름으로 보여준다. 내부 값은 그대로 두고 표시만 바꾼다.
@@ -185,7 +185,61 @@ export function Settings({ onClose }: { onClose: () => void }): React.JSX.Elemen
         </div>
       </Section>
 
+      <RecentChanges />
+
       {saving && <div style={S.hint}>저장 중…</div>}
+    </div>
+  )
+}
+
+/**
+ * 에이전트가 바꾼 파일과 되돌리기.
+ *
+ * 삭제는 여기 안 나온다 — 셸이 지운 파일은 우리 손을 거치지 않아 뜰 수가 없다.
+ * 그래서 파괴적 명령은 자동 승인에서 빼고 항상 물어본다.
+ */
+function RecentChanges(): React.JSX.Element {
+  const [changes, setChanges] = useState<FileChange[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const reload = (): void => {
+    void window.waifu.listChanges().then(setChanges)
+  }
+  useEffect(reload, [])
+
+  return (
+    <div style={S.section}>
+      <div style={S.sectionTitle}>최근 변경</div>
+      {changes.length === 0 && <div style={S.hint}>아직 바뀐 파일이 없다.</div>}
+      {changes.slice(0, 12).map((c) => (
+        <div key={c.id} style={S.changeRow}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={S.changePath}>{c.path}</div>
+            <div style={S.hint}>
+              {new Date(c.at).toLocaleString()} · {c.toolName}
+              {c.restoredAt ? ' · 되돌림' : c.hasBackup ? '' : ' · 새로 만든 파일'}
+            </div>
+          </div>
+          <button
+            style={{
+              ...S.button,
+              ...(c.hasBackup && !c.restoredAt ? {} : { background: '#3a3750', cursor: 'default' })
+            }}
+            disabled={!c.hasBackup || c.restoredAt !== null || busy === c.id}
+            onClick={() => {
+              setBusy(c.id)
+              void window.waifu.undoChange(c.id).then((r) => {
+                setBusy(null)
+                // 실패 이유를 숨기면 사용자는 되돌아간 줄 안다.
+                if (!r.ok) window.alert(`되돌리지 못했다: ${r.reason ?? '알 수 없는 이유'}`)
+                reload()
+              })
+            }}
+          >
+            되돌리기
+          </button>
+        </div>
+      ))}
     </div>
   )
 }
@@ -269,6 +323,19 @@ const S = {
     padding: '8px 10px',
     fontSize: '12px',
     marginTop: '6px'
+  },
+  changeRow: {
+    display: 'flex',
+    gap: '10px',
+    alignItems: 'center',
+    padding: '8px 0',
+    borderBottom: '1px solid #262432'
+  },
+  changePath: {
+    fontSize: '13px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
   },
   field: { display: 'block', marginTop: '10px' },
   input: {
