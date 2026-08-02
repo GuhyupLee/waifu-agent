@@ -11,10 +11,11 @@ import {
 } from '../src/renderer/avatar/motionTransitions'
 
 describe('motion transition graph', () => {
-  it('classifies ambient, one-shot, sustained, and pointer-interactive motions', () => {
+  it('classifies ambient, one-shot, sustained, locomotion, and pointer-interactive motions', () => {
     expect(motionRole(DEFAULT_AMBIENT_MOTION, true)).toBe('ambient')
     expect(motionRole('wave-right', false)).toBe('one-shot')
     expect(motionRole('dance-sway', true)).toBe('sustained')
+    expect(motionRole('walk', true)).toBe('locomotion')
     expect(motionRole('mouse-tether-right', true)).toBe('interactive')
     expect(isInteractiveMotion('mouse-tether-float-curl')).toBe(true)
     expect(isInteractiveMotion('wave-right')).toBe(false)
@@ -23,6 +24,7 @@ describe('motion transition graph', () => {
   it('never loops a clip whose authored boundary is not seamless', () => {
     expect(effectiveMotionLoop('wave-right', true)).toBe(false)
     expect(effectiveMotionLoop('dance-sway', true)).toBe(true)
+    expect(effectiveMotionLoop('walk', true)).toBe(true)
     expect(motionRole('idle-breathe', false)).toBe('one-shot')
   })
 
@@ -38,6 +40,12 @@ describe('motion transition graph', () => {
   it('enters pointer tether quickly and leaves it with a longer settle', () => {
     expect(transitionSeconds('ambient', 'interactive')).toBeLessThan(
       transitionSeconds('interactive', 'ambient')
+    )
+  })
+
+  it('plants the first walking step quickly and settles more slowly on arrival', () => {
+    expect(transitionSeconds('ambient', 'locomotion')).toBeLessThan(
+      transitionSeconds('locomotion', 'ambient')
     )
   })
 

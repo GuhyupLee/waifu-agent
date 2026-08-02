@@ -123,4 +123,21 @@ describe('roam lifecycle', () => {
     expect(onDone).toHaveBeenCalledWith('destroyed')
     expect(window.setBounds).not.toHaveBeenCalled()
   })
+
+  it('lets an immediate cancellation win over queued same-position completion', async () => {
+    const window = fakeWindow({ x: 10, y: 10, width: 420, height: 640 })
+    const onDone = vi.fn()
+    const handle = roamTo(
+      window.win,
+      { x: 10, y: 10, width: 420, height: 640 },
+      { onStart: vi.fn(), onDone },
+      fixedDuration
+    )
+
+    handle.cancel()
+    await vi.runAllTimersAsync()
+
+    expect(onDone).toHaveBeenCalledOnce()
+    expect(onDone).toHaveBeenCalledWith('cancelled')
+  })
 })

@@ -1,4 +1,4 @@
-export type MotionRole = 'ambient' | 'one-shot' | 'sustained' | 'interactive'
+export type MotionRole = 'ambient' | 'one-shot' | 'sustained' | 'locomotion' | 'interactive'
 
 export const DEFAULT_AMBIENT_MOTION = 'idle-breathe'
 
@@ -53,6 +53,7 @@ export function isInteractiveMotion(name: string): boolean {
 
 export function motionRole(name: string, loop: boolean): MotionRole {
   if (isInteractiveMotion(name)) return 'interactive'
+  if (name === 'walk' && loop) return 'locomotion'
   if (loop && AMBIENT_POOL.some((entry) => entry.name === name)) return 'ambient'
   return loop ? 'sustained' : 'one-shot'
 }
@@ -64,6 +65,9 @@ export function motionRole(name: string, loop: boolean): MotionRole {
 export function transitionSeconds(from: MotionRole | null, to: MotionRole): number {
   if (to === 'interactive') return 0.14
   if (from === 'interactive') return 0.42
+  // 첫발은 빠르게 붙이고, 도착 뒤에는 체중이 idle로 충분히 가라앉게 한다.
+  if (to === 'locomotion') return 0.22
+  if (from === 'locomotion') return 0.38
   // 첫 action의 원본 바인딩은 T-pose일 수 있으므로 그 상태와 섞지 않는다.
   if (from == null) return 0
   if (from === 'ambient' && to === 'ambient') return 0.72

@@ -174,9 +174,15 @@ export function roamTo(
   const distance = Math.hypot(dx, dy)
 
   if (distance < 2) {
+    let settled = false
+    const finish = (reason: RoamEndReason): void => {
+      if (settled) return
+      settled = true
+      callbacks.onDone(reason)
+    }
     // 호출자가 handle을 저장한 뒤 종결 이벤트를 받게 해 동기 완료 race를 피한다.
-    queueMicrotask(() => callbacks.onDone('completed'))
-    return { cancel: () => {} }
+    queueMicrotask(() => finish('completed'))
+    return { cancel: () => finish('cancelled') }
   }
 
   const rawDuration = Math.min(

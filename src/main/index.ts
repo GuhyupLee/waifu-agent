@@ -85,8 +85,11 @@ function registerIpc(): void {
         // 잠잠해진 뒤 한 번만 찍는다.
         if (motionLogTimer) clearTimeout(motionLogTimer)
         motionLogTimer = setTimeout(() => {
+          // 이 목록은 **에이전트가 부를 수 있는** 것만이다. mouse-tether 처럼 포인터
+          // 좌표와 함께만 의미가 있는 모션은 렌더러가 일부러 숨긴다. 그래서 등록 수보다
+          // 적은 게 정상이다 — 로드 실패로 읽히지 않게 문구를 분명히 해둔다.
           process.stdout.write(
-            `[avatar] 재생 가능 모션 ${event.names.length}개: ${event.names.join(', ') || '(없음)'}\n`
+            `[avatar] 에이전트가 부를 수 있는 모션 ${event.names.length}개: ${event.names.join(', ') || '(없음)'}\n`
           )
         }, 500)
         break
@@ -388,8 +391,23 @@ function verifyChildEntries(): void {
   process.stdout.write(`[child] hook: ${permissionHookCommand()}\n`)
 }
 
+/**
+ * 렌더러 콘솔의 경고·오류를 main 로그로 끌어온다.
+ *
+ * 이게 없으면 렌더러에서 난 실패가 DevTools 를 열어야만 보인다. 투명 창은 DevTools 를
+ * 붙여서 열면 불투명해지므로 그마저도 번거롭다. 모션 로드 실패처럼 조용히 지나가는
+ * 문제를 놓치게 된다.
+ */
+function forwardConsole(win: BrowserWindow, tag: string): void {
+  win.webContents.on('console-message', (_e, level, message) => {
+    // 0=verbose 1=info 2=warning 3=error. 잡음을 줄이려고 경고 이상만 올린다.
+    if (level >= 2) process.stderr.write(`[${tag}] ${message}\n`)
+  })
+}
+
 function createWindows(config: WaifuConfig): void {
   avatarWindow = createAvatarWindow()
+  forwardConsole(avatarWindow, 'avatar:console')
   panelWindow = createPanelWindow(config.persona.name)
 
   // once 가 아니라 on 이어야 한다 — 개발 중 HMR 로 페이지가 다시 로드되면 씬이 새로
