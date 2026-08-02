@@ -11,7 +11,8 @@ import {
   createVRMAnimationClip
 } from '@pixiv/three-vrm-animation'
 import type { Emotion, Viseme } from '@shared/protocol'
-import { applyIdlePose, clampAngle, damp, fitCameraToObject } from './pose'
+import { applyIdlePose, applyLivelinessOverlay, clampAngle, damp, fitCameraToObject } from './pose'
+import { BlinkModel, SaccadeModel, Spring, loopVariation } from './liveliness'
 import { HangPhysics } from './hang'
 import { PatDetector, TOUCH_REGIONS, findTouchedRegion, pickReactionMotion } from './touch'
 import {
@@ -33,8 +34,6 @@ const VISEME_EXPRESSIONS: readonly Exclude<Viseme, 'sil'>[] = ['aa', 'ih', 'ou',
 /** 머리가 돌아갈 수 있는 한계. 넘어가면 목이 꺾여 보인다. */
 const MAX_YAW = 0.5
 const MAX_PITCH = 0.32
-/** 머리가 커서를 따라가는 속도. 클수록 즉각적이고, 낮으면 느긋하다. */
-const HEAD_STIFFNESS = 7
 
 /** 드래그 중 재생하는 전용 VRMA. 파일이 없으면 기존 드래그 동작으로 안전하게 폴백한다. */
 const DRAG_MOTION = 'mouse-tether-right'
@@ -141,8 +140,12 @@ export class VrmScene {
   private available = new Set<string>()
   private readonly warned = new Set<string>()
 
-  private blinkTimer = 0
-  private nextBlinkAt = 2 + Math.random() * 3
+  private readonly blink = new BlinkModel()
+  /** 눈은 미끄러지지 않고 도약한다. 머리(스프링)와 다른 신호다. */
+  private readonly saccade = new SaccadeModel()
+  /** 지수 감쇠에는 속도가 없어 관성도 오버슛도 만들 수 없다. */
+  private readonly headYawSpring = new Spring(0, 1.5, 0.72)
+  private readonly headPitchSpring = new Spring(0, 1.7, 0.8)
   private elapsed = 0
 
   /** 창 중심 기준 정규화 커서 방향. x 오른쪽 +, y 아래 +. 창 밖이면 ±1 을 넘는다. */
@@ -483,9 +486,15 @@ export class VrmScene {
     const wasActive = this.actionWeights.has(next)
     const restartFinishedSource = wasActive && next.paused && reason === 'request'
     if (!wasActive || restartFinishedSource) next.reset()
+    // 같은 idle 을 늘 같은 속도로 돌리면 몇 번만 봐도 루프인 게 보인다.
+    //  - ambient 에만 준다: walk 는 이동 속도와 보폭이 맞아야 발이 미끄러지지 않는다.
+    //  - 새로 고른 것에만 준다: restore 는 "멈춘 지점에서 이어서" 가 전부인데
+    //    거기서 속도를 바꾸면 이어붙인 자리가 보인다.
+    const timeScale =
+      nextRole === 'ambient' && reason === 'ambient' ? loopVariation(Math.random()).timeScale : 1
     next
       .stopFading()
-      .setEffectiveTimeScale(1)
+      .setEffectiveTimeScale(timeScale)
       .setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
     next.enabled = true
     next.paused = false
@@ -799,11 +808,19 @@ export class VrmScene {
     this.applyCursorLookBlend()
     this.updateMotionDirector(delta)
     // VRMA 가 도는 동안 여기서 rotation 을 대입하면 믹서 결과를 덮어쓴다.
-    if (!this.currentAction && this.actionWeights.size === 0 && this.vrm?.humanoid) {
-      applyIdlePose(this.vrm.humanoid, {
+    const motionPlaying = !(!this.currentAction && this.actionWeights.size === 0)
+    if (!motionPlaying && this.vrm?.humanoid) {
+      applyIdlePose(this.vrm.humanoid, { yaw: this.headYaw, pitch: this.headPitch })
+    }
+    // 숨쉬기는 대입이 아니라 곱셈이라 VRMA 위에도 얹힌다.
+    // 매달려 있는 동안에는 끈다 — 크레인에 끌려가는 몸이 태연히 호흡하면 어색하다.
+    if (this.vrm?.humanoid) {
+      applyLivelinessOverlay(this.vrm.humanoid, {
         elapsed: this.elapsed,
+        weight: this.dragGrip ? 0.25 : 1,
         yaw: this.headYaw,
-        pitch: this.headPitch
+        pitch: this.headPitch,
+        motionPlaying
       })
     }
     this.applyExpressions(delta)
@@ -834,14 +851,24 @@ export class VrmScene {
     // 화면 좌표는 아래가 +y 이고, 머리를 숙이는 회전도 +x 다. 부호가 그대로 맞는다.
     const targetPitch = clampAngle(this.gaze.y * MAX_PITCH, MAX_PITCH)
 
-    this.headYaw = damp(this.headYaw, targetYaw, HEAD_STIFFNESS, delta)
-    this.headPitch = damp(this.headPitch, targetPitch, HEAD_STIFFNESS, delta)
+    // 스프링은 속도를 들고 있어서 빠르게 던지면 살짝 지나쳤다 돌아온다.
+    // 지수 감쇠로는 이 관성이 절대 나오지 않는다 — 늘 같은 속도로 미끄러진다.
+    this.headYaw = this.headYawSpring.update(targetYaw, delta)
+    this.headPitch = this.headPitchSpring.update(targetPitch, delta)
 
-    // 눈은 머리가 돌고 남은 만큼을 채운다. 카메라 로컬에서 위가 +y 라 y 부호를 뒤집는다.
+    // 눈은 머리와 다른 신호로 움직인다. 머리는 스프링으로 끌려오고, 눈은 도약한다.
+    // 둘을 같은 곡선으로 움직이면 눈이 머리에 붙어 있는 것처럼 보인다.
+    const eye = this.saccade.update(delta, { x: this.gaze.x, y: this.gaze.y })
+    // 큰 시선 이동은 깜빡임을 부른다. 사람에게서 실제로 관찰되는 결합이다.
+    if (eye.jumped) this.blink.onGazeShift()
+
+    const eyeYaw = clampAngle(eye.x * MAX_YAW, MAX_YAW)
+    const eyePitch = clampAngle(eye.y * MAX_PITCH, MAX_PITCH)
+    // 카메라 로컬에서 위가 +y 라 y 부호를 뒤집는다.
     this.lookTarget.position.set(
-      Math.sin(this.headYaw) * 1.5,
-      -this.headPitch * 1.2,
-      -1.5 * Math.cos(this.headYaw)
+      Math.sin(eyeYaw) * 1.5,
+      -eyePitch * 1.2,
+      -1.5 * Math.cos(eyeYaw)
     )
   }
 
@@ -868,18 +895,8 @@ export class VrmScene {
     }
 
     // 눈 깜빡임. 말하는 중에도 깜빡여야 살아 있어 보인다.
-    this.blinkTimer += delta
-    let blink = 0
-    if (this.blinkTimer >= this.nextBlinkAt) {
-      const t = (this.blinkTimer - this.nextBlinkAt) / 0.12
-      if (t >= 1) {
-        this.blinkTimer = 0
-        this.nextBlinkAt = 2 + Math.random() * 4
-      } else {
-        blink = t < 0.5 ? t * 2 : (1 - t) * 2
-      }
-    }
-    em.setValue('blink', blink)
+    // 간격은 지수분포, 곡선은 비대칭(빨리 감고 천천히 뜬다), 큰 시선 이동에 끌려온다.
+    em.setValue('blink', this.blink.update(delta))
   }
 
   /**
@@ -1032,6 +1049,11 @@ export class VrmScene {
     // getDelta 를 한 번 버려서 누적된 시간을 흘려보낸다.
     this.clock.getDelta()
     this.vrm?.springBoneManager?.reset()
+    // 스프링은 속도를 들고 있다. 자는 동안 쌓인 목표 차이를 그대로 풀면
+    // 깨어나는 순간 머리가 한 번 크게 휘두른다.
+    this.headYawSpring.snap(this.headYaw)
+    this.headPitchSpring.snap(this.headPitch)
+    this.saccade.snap({ x: this.gaze.x, y: this.gaze.y })
   }
 
   private disposeVrm(): void {

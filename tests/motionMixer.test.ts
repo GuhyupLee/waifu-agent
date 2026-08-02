@@ -131,13 +131,16 @@ describe('VrmScene motion mixer integration', () => {
 
     expect(scene.switchMotion('idle-breathe', true, 'ambient')).toBe(true)
     scene.mixer.update(0.1)
+    // ambient 는 루프 티가 나지 않도록 재생 속도를 흔든다. 떠난 위상을 실제로
+    // 읽어야 하고, 0.1 초를 재생했으니 0.1 이라고 가정하면 안 된다.
+    const leftAt = scene.currentAction!.time
     expect(scene.switchMotion('wave-right', false, 'request')).toBe(true)
     scene.advanceMotionBlend(0.6)
     scene.mixer.update(0.6)
 
     expect(scene.currentMotionName).toBe('idle-breathe')
     expect(scene.currentMotionLoop).toBe(true)
-    expect(scene.currentAction?.time).toBeCloseTo(0.1, 5)
+    expect(scene.currentAction?.time).toBeCloseTo(leftAt, 5)
   })
 
   it('ignores stale finished events and does not restart the same active one-shot', () => {
@@ -180,6 +183,7 @@ describe('VrmScene motion mixer integration', () => {
 
     expect(scene.switchMotion('idle-breathe', true, 'ambient')).toBe(true)
     scene.mixer.update(0.25)
+    const leftAt = scene.currentAction!.time
     expect(scene.beginRoamMotion('walk', 1)).toBe(true)
     expect(scene.currentMotionName).toBe('walk')
     expect(scene.roamLeanTarget).toBeLessThan(0)
@@ -190,7 +194,7 @@ describe('VrmScene motion mixer integration', () => {
 
     expect(scene.currentMotionName).toBe('idle-breathe')
     expect(scene.currentMotionLoop).toBe(true)
-    expect(scene.currentAction?.time).toBeCloseTo(0.25, 5)
+    expect(scene.currentAction?.time).toBeCloseTo(leftAt, 5)
     expect(scene.roamLeanTarget).toBe(0)
     expect([...scene.actionWeights.values()].reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 8)
   })

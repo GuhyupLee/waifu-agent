@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { VRMHumanoid } from '@pixiv/three-vrm'
+import { breathCurve, drift } from './liveliness'
 
 /**
  * VRM 의 rest pose 는 T 포즈다. 모션이 하나도 없으면 팔을 벌린 채로 서 있게 되므로,
@@ -18,8 +19,6 @@ const ELBOW_BEND = 0.12
 const ARM_FORWARD = 0.08
 
 export interface IdlePoseInput {
-  /** 초 단위 누적 시간. 숨쉬기 위상에 쓴다. */
-  elapsed: number
   /** 감쇠를 거친 머리 좌우 각(라디안). */
   yaw: number
   /** 감쇠를 거친 머리 상하 각(라디안). */
@@ -36,10 +35,7 @@ export interface IdlePoseInput {
  * 믹서가 쓴 값을 덮어쓴다.
  */
 export function applyIdlePose(humanoid: VRMHumanoid, input: IdlePoseInput): void {
-  const { elapsed, yaw, pitch } = input
-
-  const breathe = Math.sin(elapsed * 1.1) * 0.012
-  const sway = Math.sin(elapsed * 0.43) * 0.02
+  const { yaw, pitch } = input
 
   // 팔은 z 축 회전이 주축이다. 왼팔(+X)은 음수, 오른팔(-X)은 양수로 내려간다.
   setRot(humanoid, 'leftUpperArm', 0, ARM_FORWARD, -ARM_DOWN)
@@ -47,13 +43,65 @@ export function applyIdlePose(humanoid: VRMHumanoid, input: IdlePoseInput): void
   setRot(humanoid, 'leftLowerArm', 0, -ELBOW_BEND, 0)
   setRot(humanoid, 'rightLowerArm', 0, ELBOW_BEND, 0)
 
-  setRot(humanoid, 'spine', breathe, 0, sway * 0.5)
-  setRot(humanoid, 'chest', breathe * 0.6, 0, 0)
-
   // 목과 머리에 나눠 준다. 목이 먼저 조금 돌고 머리가 더 크게 도는 편이 자연스럽다.
   // 눈은 vrm.lookAt 이 나머지를 채운다 — 머리가 이미 돌아간 만큼 눈은 덜 돌아간다.
-  setRot(humanoid, 'neck', pitch * 0.35, yaw * 0.35, -sway * 0.3)
-  setRot(humanoid, 'head', pitch * 0.65, yaw * 0.65, -sway * 0.3)
+  setRot(humanoid, 'neck', pitch * 0.35, yaw * 0.35, 0)
+  setRot(humanoid, 'head', pitch * 0.65, yaw * 0.65, 0)
+  // 숨쉬기와 표류는 applyLivelinessOverlay 가 얹는다. 여기서 또 넣으면 두 번 들어간다.
+}
+
+/** 안정 호흡 한 번에 걸리는 시간(초). 분당 약 14회. */
+const BREATH_PERIOD = 4.2
+
+export interface OverlayInput {
+  elapsed: number
+  /**
+   * 0..1. VRMA 가 크게 움직이는 동안에는 낮춰 저작된 동작을 방해하지 않는다.
+   * 반대로 서 있는 동안에는 1 로 둬야 정지 화면이 되지 않는다.
+   */
+  weight: number
+  /** 감쇠를 거친 머리 좌우 각. VRMA 위에 부분적으로만 얹는다. */
+  yaw: number
+  /** 감쇠를 거친 머리 상하 각. */
+  pitch: number
+  /** VRMA 가 재생 중인가. 재생 중이면 머리 추적을 훨씬 약하게 얹는다. */
+  motionPlaying: boolean
+}
+
+/**
+ * 숨쉬기·표류·머리 추적을 **더한다**.
+ *
+ * 대입이 아니라 곱셈(쿼터니언 누적)인 것이 핵심이다. `rotation.set` 을 쓰면 믹서가
+ * 쓴 VRMA 가 그 프레임에서 사라진다. 그래서 지금까지는 클립이 하나라도 돌면
+ * 숨쉬기를 통째로 껐고, 결과적으로 **모션 중에는 호흡이 멈춘 캐릭터**가 됐다.
+ * 사람은 걸으면서도 숨을 쉰다. 이게 인형처럼 보이는 가장 큰 이유였다.
+ *
+ * `vrm.update(delta)` **전에**, 믹서 갱신 **후에** 불러야 한다.
+ */
+export function applyLivelinessOverlay(humanoid: VRMHumanoid, input: OverlayInput): void {
+  const { elapsed, weight, yaw, pitch, motionPlaying } = input
+
+  // weight 가 0 이어도 빠져나가지 않는다. 지난 프레임에 얹은 오프셋을 걷어내는 것도
+  // addRot 의 일이라, 여기서 건너뛰면 마지막 자세가 그대로 굳는다.
+
+  // 0..1 을 -0.5..0.5 로 옮겨 중립 자세를 기준으로 부풀렸다 꺼지게 한다.
+  const breath = (breathCurve(elapsed / BREATH_PERIOD) - 0.5) * weight
+  // 사인 하나로 흔들면 메트로놈이 된다. 서로 안 나누어떨어지는 신호를 겹친다.
+  const swayZ = drift(elapsed * 0.31, 3) * 0.016 * weight
+  const swayX = drift(elapsed * 0.24, 7) * 0.010 * weight
+
+  addRot(humanoid, 'spine', breath * 0.020 + swayX * 0.4, swayX * 0.5, swayZ * 0.5)
+  addRot(humanoid, 'chest', breath * 0.014, 0, swayZ * 0.3)
+  // 들이쉬면 어깨가 조금 올라간다. 가슴만 움직이면 풍선처럼 보인다.
+  addRot(humanoid, 'leftShoulder', 0, 0, -breath * 0.030)
+  addRot(humanoid, 'rightShoulder', 0, 0, breath * 0.030)
+
+  // 저작된 모션이 이미 고개를 쓰고 있을 수 있으므로 크게 얹지 않는다.
+  // 그래도 0 으로 두면 모션 중에는 커서를 완전히 무시해서 남처럼 보인다.
+  // 모션이 없을 때는 applyIdlePose 가 이미 전량을 넣었으므로 여기서는 0 이다.
+  const track = motionPlaying ? 0.35 * weight : 0
+  addRot(humanoid, 'neck', pitch * 0.35 * track, yaw * 0.35 * track, 0)
+  addRot(humanoid, 'head', pitch * 0.5 * track, yaw * 0.5 * track, -swayZ * 0.6)
 }
 
 type BoneName = Parameters<VRMHumanoid['getNormalizedBoneNode']>[0]
@@ -61,6 +109,48 @@ type BoneName = Parameters<VRMHumanoid['getNormalizedBoneNode']>[0]
 function setRot(humanoid: VRMHumanoid, name: BoneName, x: number, y: number, z: number): void {
   const bone = humanoid.getNormalizedBoneNode(name)
   if (bone) bone.rotation.set(x, y, z)
+}
+
+// 매 프레임 본마다 새로 만들면 초당 수백 개가 GC 로 간다.
+const scratchEuler = new THREE.Euler()
+const scratchQuat = new THREE.Quaternion()
+
+interface OverlayState {
+  /** 오버레이를 얹기 **전** 값. 믹서가 이 본을 안 건드렸을 때 여기로 되돌린다. */
+  base: THREE.Quaternion
+  /** 지난 프레임에 우리가 남긴 값. 그대로면 아무도 덮어쓰지 않았다는 뜻이다. */
+  applied: THREE.Quaternion
+}
+
+/** 모델을 바꾸면 본 노드째로 사라지므로 WeakMap 이 알아서 비운다. */
+const overlayState = new WeakMap<THREE.Object3D, OverlayState>()
+
+/**
+ * 오버레이 회전을 얹는다.
+ *
+ * 그냥 `quaternion.multiply` 만 하면 안 된다. `VRMHumanoid.update()` 는 정규화 본을
+ * 읽어 raw 본에 쓸 뿐 **정규화 본을 초기화하지 않는다.** 그래서 믹서가 트랙을 갖고
+ * 있지 않은 본(어깨는 VRMA 에 트랙이 없는 경우가 흔하다)에서는 우리 오프셋이
+ * 매 프레임 누적되어 몇 초 만에 몸이 접힌다.
+ *
+ * 그래서 지난 프레임에 남긴 값이 그대로면 먼저 걷어내고 새로 얹는다.
+ * 값이 달라졌다면 믹서(또는 applyIdlePose)가 덮어쓴 것이므로 그것을 기준으로 삼는다.
+ */
+function addRot(humanoid: VRMHumanoid, name: BoneName, x: number, y: number, z: number): void {
+  const bone = humanoid.getNormalizedBoneNode(name)
+  if (!bone) return
+
+  let state = overlayState.get(bone)
+  if (!state) {
+    state = { base: new THREE.Quaternion(), applied: new THREE.Quaternion(-2, 0, 0, 0) }
+    overlayState.set(bone, state)
+  } else if (bone.quaternion.equals(state.applied)) {
+    bone.quaternion.copy(state.base)
+  }
+
+  state.base.copy(bone.quaternion)
+  bone.quaternion.multiply(scratchQuat.setFromEuler(scratchEuler.set(x, y, z)))
+  state.applied.copy(bone.quaternion)
 }
 
 /**
