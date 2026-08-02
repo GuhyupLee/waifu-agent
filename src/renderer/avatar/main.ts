@@ -127,6 +127,9 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
       } catch (err) {
         console.warn(`[avatar] 모션 ${cmd.name} 로드 실패:`, err)
       }
+      // 성공하든 실패하든 현재 재생 가능한 목록을 알린다. 여러 개가 연달아 들어오므로
+      // 마지막 것이 최종 목록이 된다.
+      waifu.sendAvatarEvent({ type: 'motions', names: scene.motionNames })
       break
 
     case 'gaze':

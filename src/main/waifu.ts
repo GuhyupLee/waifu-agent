@@ -29,6 +29,8 @@ export class Waifu {
   private readonly control: ControlServer
   /** 대기 중인 권한 승인. 훅이 응답을 기다리며 붙잡혀 있다. */
   private readonly pending = new Map<string, (d: PermissionDecision) => void>()
+  /** 렌더러가 실제로 로드에 성공한 모션 이름. 에이전트에게 이 목록으로만 답한다. */
+  private motions: string[] = []
 
   constructor(
     private readonly config: WaifuConfig,
@@ -81,6 +83,11 @@ export class Waifu {
     this.toAvatar({ type: 'status', state: 'idle' })
   }
 
+  /** 렌더러가 확인해준 재생 가능 모션 목록. main 의 IPC 핸들러에서 넣어준다. */
+  setMotions(names: string[]): void {
+    this.motions = names
+  }
+
   /** 패널에서 온 권한 응답. 훅이 이 값을 기다리고 있다. */
   resolvePermission(id: string, decision: PermissionDecision): void {
     const resolve = this.pending.get(id)
@@ -130,7 +137,11 @@ export class Waifu {
 
       case 'waifu_status':
         this.toAvatar({ type: 'status', state: args.state as never })
-        return 'ok'
+        // 툴 설명에서 "사용 가능한 모션은 여기서 알려준다"고 약속했다.
+        // 목록이 비어 있으면 그렇다고 말해야 한다 — 없는 모션을 부르게 두면 안 된다.
+        return this.motions.length
+          ? `ok. 사용 가능한 모션: ${this.motions.join(', ')}`
+          : 'ok. 등록된 모션이 없다. waifu_motion 을 부르지 마라.'
 
       case 'ask_permission':
         return this.askPermission(args)

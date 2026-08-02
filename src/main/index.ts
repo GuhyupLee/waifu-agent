@@ -70,6 +70,13 @@ function registerIpc(): void {
         }
         break
 
+      case 'motions':
+        waifu?.setMotions(event.names)
+        process.stdout.write(
+          `[avatar] 재생 가능 모션 ${event.names.length}개: ${event.names.join(', ') || '(없음)'}\n`
+        )
+        break
+
       case 'clicked':
         panelWindow?.show()
         break

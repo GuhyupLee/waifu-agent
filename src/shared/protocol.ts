@@ -117,6 +117,12 @@ export type AvatarEvent =
   | { type: 'drag-end' }
   | { type: 'speech-end'; id: string }
   /**
+   * 실제로 로드에 성공한 모션 이름들. main 이 보낸 목록이 아니라 렌더러가 확인한 것이다 —
+   * 깨진 .vrma 가 섞여 있으면 파일은 있는데 재생은 안 되므로.
+   * 에이전트에게 알려줄 수 있는 유일한 신뢰 가능한 목록이다.
+   */
+  | { type: 'motions'; names: string[] }
+  /**
    * `presets` 는 모델이 실제로 들고 있는 VRM 표정 프리셋 이름들이다.
    * 없는 프리셋에 setValue 해도 에러 없이 조용히 무시되므로, 표정이 안 먹을 때
    * 제일 먼저 확인해야 할 정보다.
