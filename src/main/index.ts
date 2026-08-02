@@ -15,7 +15,8 @@ import { assetUrl, handleAssetProtocol, registerAssetScheme } from './assetProto
 import { applyContentSecurityPolicy } from './csp'
 import { loadConfig, saveConfig } from './config/store'
 import { Waifu } from './waifu'
-import { checkStt, transcribe } from './voice/stt'
+import { stopActiveWhispers, transcribe } from './voice/stt'
+import { PushToTalkHotkey } from './voice/hotkey'
 import { pingEngine } from './voice/tts'
 import { DiscordBot } from './discord/bot'
 import type { PermissionDecision } from '@shared/protocol'
@@ -101,7 +102,14 @@ function registerIpc(): void {
         break
 
       case 'recording':
-        recording = event.on
+        if (!event.on) {
+          // 권한 거부·초기화 실패·정상 종료·자동 종료 모두 다음 토글을 '시작'으로 되돌린다.
+          recordingDesired = false
+        } else if (!recordingDesired) {
+          // 마이크 권한 창이 떠 있는 동안 사용자가 다시 눌러 취소한 경우, 늦게 도착한
+          // recording=true 를 그대로 두지 않는다. 렌더러가 시작을 마치자마자 다시 끈다.
+          requestRecording(false)
+        } else discardRecorded = false
         break
 
       case 'recorded':
@@ -133,6 +141,20 @@ function registerIpc(): void {
       // 생성자 옵션만으로는 레벨이 floating 이라 작업표시줄 뒤로 간다.
       if (next.avatar.alwaysOnTop) avatarWindow.setAlwaysOnTop(true, 'screen-saver')
       else avatarWindow.setAlwaysOnTop(false)
+    }
+    // voice 변경은 재시작 없이 반영한다. say() 가 쓰는 값과 STT 핫키 등록 둘 다 시작
+    // 스냅샷으로 굳어 있으므로 여기서 갱신하지 않으면 재시작 전까지 무효다.
+    if (patch.voice) {
+      waifu?.updateVoice(next.voice)
+      pushToTalk?.sync(next.voice)
+      // 음성을 끄거나 STT 경로를 지워 핫키를 풀었다면 진행 중인 마이크도 같이 닫는다.
+      // 그렇지 않으면 사용자는 종료 핫키를 잃고 2분 자동 제한까지 기다려야 한다.
+      if (!pushToTalk?.current && recordingDesired) {
+        // master voice off/경로 제거로 중단한 캡처는 설정을 다시 켜더라도 에이전트 턴으로
+        // 보내지 않는다. 다음 정상 recording=true가 올 때만 discard를 해제한다.
+        discardRecorded = true
+        requestRecording(false)
+      }
     }
     return next
   })
@@ -201,8 +223,10 @@ function registerIpc(): void {
   )
 }
 
-/** 녹음 중인지. 핫키가 토글이라 상태를 들고 있어야 한다. */
-let recording = false
+/** 렌더러의 비동기 시작/종료보다 앞서 움직이는 사용자의 최신 의도. */
+let recordingDesired = false
+/** 설정 변경으로 강제 중단한 캡처는 개인정보 경계상 전사하지 않는다. */
+let discardRecorded = false
 let discord: DiscordBot | null = null
 
 /**
@@ -250,37 +274,41 @@ function registerPowerHandlers(): void {
 }
 
 /**
- * 푸시투토크 핫키를 건다.
+ * 푸시투토크 핫키 컨트롤러.
  *
  * Electron 의 globalShortcut 은 키를 뗀 시점을 주지 않으므로 "누르고 있는 동안"이
  * 아니라 토글이다. 한 번 눌러 말하고 다시 눌러 보낸다.
+ *
+ * 시작할 때 한 번 sync 하고, voice 설정이 바뀔 때마다 다시 sync 한다 — 등록 상태를
+ * 설정에 맞춰 유지하는 책임은 PushToTalkHotkey 안에 있다.
  */
-function registerPushToTalk(config: WaifuConfig): void {
-  const avail = checkStt(config.voice.stt)
-  if (!avail.ok) {
-    process.stdout.write(`[voice] 음성 입력 꺼짐 — ${avail.reason}\n`)
-    return
-  }
-  const ok = globalShortcut.register(config.voice.sttHotkey, () => {
-    const win = avatarWindow
-    if (!win || win.isDestroyed()) return
-    win.webContents.send(IPC.avatarCommand, { type: 'record', on: !recording })
-  })
-  process.stdout.write(
-    ok
-      ? `[voice] 푸시투토크 핫키 ${config.voice.sttHotkey} 등록됨 (토글)\n`
-      : `[voice] 핫키 ${config.voice.sttHotkey} 등록 실패 — 다른 앱이 쓰고 있다\n`
-  )
+let pushToTalk: PushToTalkHotkey | null = null
+
+/** 핫키가 눌렸을 때 녹음을 토글한다. 비동기 권한 요청 중 재입력도 최신 의도로 보존한다. */
+function pushToTalkTrigger(): void {
+  requestRecording(!recordingDesired)
+}
+
+function requestRecording(on: boolean): void {
+  const win = avatarWindow
+  if (!win || win.isDestroyed()) return
+  recordingDesired = on
+  win.webContents.send(IPC.avatarCommand, { type: 'record', on: recordingDesired })
 }
 
 /** 녹음된 음성을 받아쓰고 그대로 한 턴으로 보낸다. */
 async function handleRecorded(wavBase64: string | null): Promise<void> {
+  const voice = loadConfig().voice
+  if (discardRecorded || !voice.enabled) {
+    process.stdout.write('[voice] 음성 기능이 꺼져 중단된 녹음을 버렸다\n')
+    return
+  }
   if (!wavBase64) {
-    process.stdout.write('[voice] 녹음된 소리가 없다\n')
+    process.stdout.write('[voice] 유효한 음성을 찾지 못했다 (너무 짧거나 조용함)\n')
     return
   }
   try {
-    const text = await transcribe(wavBase64, loadConfig().voice.stt)
+    const text = await transcribe(wavBase64, voice.stt)
     if (!text) {
       process.stdout.write('[voice] 받아쓴 내용이 비었다\n')
       return
@@ -454,7 +482,15 @@ void app.whenReady().then(async () => {
   process.stdout.write(`[config] 퍼소나=${config.persona.name} 권한=${config.permission.mode}\n`)
   createWindows(config)
   gazeTimer = startGazeTracking()
-  registerPushToTalk(config)
+  pushToTalk = new PushToTalkHotkey(
+    {
+      register: (accelerator, callback) => globalShortcut.register(accelerator, callback),
+      unregister: (accelerator) => globalShortcut.unregister(accelerator)
+    },
+    pushToTalkTrigger,
+    (message) => process.stdout.write(`${message}\n`)
+  )
+  pushToTalk.sync(config.voice)
 
   waifu = new Waifu(
     config,
@@ -489,7 +525,9 @@ void app.whenReady().then(async () => {
 app.on('before-quit', () => {
   if (gazeTimer) clearInterval(gazeTimer)
   // 핫키를 풀지 않으면 앱이 죽은 뒤에도 다른 앱이 그 조합을 못 쓰는 경우가 있다.
+  pushToTalk?.release()
   globalShortcut.unregisterAll()
+  stopActiveWhispers()
   discord?.stop()
   void waifu?.stop()
 })

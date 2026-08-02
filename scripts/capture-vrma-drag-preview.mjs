@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 const PORT = 9338
 const DEBUG_URL = `http://127.0.0.1:${PORT}`
 const OUTPUT_DIR = join(tmpdir(), 'waifu-agent-vrma-preview')
+const PROFILE_DIR = join(tmpdir(), 'waifu-agent-vrma-preview-profile')
 const electron = resolve('node_modules/electron/dist/electron.exe')
 
 const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds))
@@ -70,11 +71,17 @@ async function capture(client, filename) {
 async function main() {
   await mkdir(OUTPUT_DIR, { recursive: true })
   const output = []
-  const child = spawn(electron, [`--remote-debugging-port=${PORT}`, 'out/main/index.js'], {
-    cwd: process.cwd(),
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
+  // 패키지 루트를 실행해야 resources 경로가 out/main 아래로 잘못 잡히지 않는다.
+  // userData도 분리해 실제 앱의 세션·DB와 캡처 검증이 서로 건드리지 않게 한다.
+  const child = spawn(
+    electron,
+    [`--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE_DIR}`, '.'],
+    {
+      cwd: process.cwd(),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
+  )
   child.stdout.on('data', (chunk) => output.push(chunk.toString()))
   child.stderr.on('data', (chunk) => output.push(chunk.toString()))
 
@@ -95,12 +102,29 @@ async function main() {
     pageClient = connect(target.webSocketDebuggerUrl)
     await pageClient.send('Page.enable')
     await pageClient.send('Runtime.enable')
-    // 54개 GLB를 모두 parse하고 마지막 motions 이벤트가 돌아올 시간을 준다.
+    // 55개 GLB를 모두 parse하고 마지막 motions 이벤트가 돌아올 시간을 준다.
     await delay(12_000)
 
+    // 모델이 없는 빈 캔버스를 성공으로 캡처하지 않는다. 과거 out/main 을 앱 루트로
+    // 실행했을 때 이 검사가 없어 검은 화면 세 장도 exit 0 이었던 적이 있다.
+    const startupLog = output.join('')
+    if (!startupLog.includes('[avatar] 모델 로드 완료')) {
+      throw new Error('Avatar model did not finish loading before drag capture')
+    }
+    const motionCount = Number(startupLog.match(/\[avatar\] 모션 (\d+)개 등록/)?.[1] ?? 0)
+    if (motionCount < 40) {
+      throw new Error(`Expected at least 40 registered motions, got ${motionCount}`)
+    }
+
     const idle = await capture(pageClient, 'idle.png')
-    const anchorX = 210
-    const anchorY = 270
+    // BrowserWindow 크기는 CSS px이고 Page.captureScreenshot 결과는 DPR이 적용된 물리 px다.
+    // 고정 물리 좌표를 쓰면 고해상도 화면에서 실루엣 밖을 누르게 되므로 viewport 비율로 잡는다.
+    const viewport = await pageClient.send('Runtime.evaluate', {
+      expression: '({ width: window.innerWidth, height: window.innerHeight })',
+      returnByValue: true
+    })
+    const anchorX = Math.round(viewport.result.value.width * 0.5)
+    const anchorY = Math.round(viewport.result.value.height * 0.48)
     await pageClient.send('Runtime.evaluate', {
       expression: `(() => {
         window.__dragPreviewTrace = [];
@@ -123,38 +147,65 @@ async function main() {
           borderRadius: '50%', boxSizing: 'border-box', pointerEvents: 'none', zIndex: '2147483647'
         });
         document.body.appendChild(marker);
+        window.addEventListener('pointermove', (event) => {
+          marker.style.left = (event.clientX - 9) + 'px';
+          marker.style.top = (event.clientY - 9) + 'px';
+        }, true);
+        const canvas = document.getElementById('avatar-canvas');
+        canvas.setPointerCapture = () => {};
+        canvas.releasePointerCapture = () => {};
+        canvas.hasPointerCapture = () => false;
+        window.__dispatchDragPreview = (type, init) => canvas.dispatchEvent(new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 77,
+          pointerType: 'mouse',
+          isPrimary: true,
+          ...init
+        }));
       })()`
     })
-    await pageClient.send('Input.dispatchMouseEvent', {
-      type: 'mouseMoved', x: anchorX, y: anchorY, screenX: 1200, screenY: 500
+    const dispatchPointer = (type, init) => pageClient.send('Runtime.evaluate', {
+      expression: `window.__dispatchDragPreview(${JSON.stringify(type)}, ${JSON.stringify(init)})`
     })
-    await pageClient.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x: anchorX, y: anchorY, screenX: 1200, screenY: 500,
-      button: 'left', buttons: 1, clickCount: 1
+    await dispatchPointer('pointermove', {
+      clientX: anchorX, clientY: anchorY, screenX: 1200, screenY: 500, buttons: 0
     })
-    for (let step = 1; step <= 18; step += 1) {
-      await pageClient.send('Input.dispatchMouseEvent', {
-        type: 'mouseMoved', x: anchorX, y: anchorY,
-        screenX: 1200 + step * 6, screenY: 500 - step * 3,
-        button: 'left', buttons: 1
-      })
-      await delay(25)
-    }
+    await dispatchPointer('pointerdown', {
+      clientX: anchorX, clientY: anchorY, screenX: 1200, screenY: 500, button: 0, buttons: 1
+    })
+    const heldX = anchorX + 24
+    const heldY = anchorY - 12
+    // DevTools Input은 BrowserWindow가 이동할 때 pointer capture를 잃는다. DOM 이벤트를
+    // 직접 보내면 런타임의 screen 좌표 경로는 그대로 검증하면서 캡처 자체는 안정적이다.
+    await dispatchPointer('pointermove', {
+      clientX: anchorX + 8, clientY: anchorY - 4,
+      screenX: 1208, screenY: 496, button: 0, buttons: 1
+    })
+    await delay(40)
+    await dispatchPointer('pointermove', {
+      clientX: heldX, clientY: heldY, screenX: 1224, screenY: 488, button: 0, buttons: 1
+    })
     await delay(900)
     const drag = await capture(pageClient, 'drag-held.png')
     const trace = await pageClient.send('Runtime.evaluate', {
       expression: 'JSON.stringify(window.__dragPreviewTrace)',
       returnByValue: true
     })
-    await pageClient.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x: anchorX, y: anchorY, screenX: 1308, screenY: 446,
-      button: 'left', buttons: 0, clickCount: 1
+    await dispatchPointer('pointerup', {
+      clientX: heldX, clientY: heldY, screenX: 1224, screenY: 488, button: 0, buttons: 0
     })
     await delay(900)
     const released = await capture(pageClient, 'released.png')
     process.stdout.write(`${idle}\n${drag}\n${released}\n`)
     process.stdout.write(`Drag trace: ${trace.result.value}\n`)
-    process.stdout.write(output.join('').split(/\r?\n/).filter((line) => /모션|motion|avatar/i.test(line)).join('\n') + '\n')
+    process.stdout.write(
+      output
+        .join('')
+        .split(/\r?\n/)
+        .filter((line) => /모션|motion|avatar|voice/i.test(line))
+        .join('\n') + '\n'
+    )
   } finally {
     pageClient?.close()
     try {

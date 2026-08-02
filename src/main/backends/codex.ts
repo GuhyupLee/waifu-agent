@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { BackendEvent, BackendKind, PermissionMode } from '@shared/protocol'
-import { CodexEventMapper, codexExitEvents } from './codexEvents'
+import {
+  CodexEventMapper,
+  codexCompletionEvents,
+  codexSpawnErrorEvents
+} from './codexEvents'
 import { NdjsonReader, parseLines } from './ndjson'
 import { cleanEnv } from './types'
 import type { AgentBackend, BackendListener, SessionOpts } from './types'
@@ -39,10 +43,57 @@ function sandboxFlag(mode: PermissionMode): string {
  * 리터럴 문자열(작은따옴표)로 감싼다.
  */
 function tomlLiteral(s: string): string {
-  // 리터럴 문자열 안에는 작은따옴표를 넣을 수 없다. 있으면 기본 문자열로 물러난다.
-  if (!s.includes("'")) return `'${s}'`
-  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  // 리터럴 문자열 안에는 작은따옴표나 개행을 넣을 수 없다. JSON 문자열 표기는 TOML 기본
+  // 문자열의 escape 규칙과 호환되므로 멀티라인 system prompt도 한 CLI 인자로 안전하게 간다.
+  if (!s.includes("'") && !/[\u0000-\u001f\u007f]/.test(s)) return `'${s}'`
+  return JSON.stringify(s)
 }
+
+/** 실제 spawn에 넘길 인자를 순수 함수로 만들어 CLI help 계약을 테스트로 고정한다. */
+export function buildCodexArgs(
+  opts: SessionOpts,
+  prompt: string,
+  sessionId: string | null
+): string[] {
+  const args = ['exec']
+
+  // resume 은 첫 턴과 받는 플래그가 다르다. 섞으면 CLI 가 거부한다.
+  if (sessionId) args.push('resume', sessionId)
+
+  args.push('--json', '--skip-git-repo-check')
+
+  if (opts.model) args.push('-m', opts.model)
+
+  if (!sessionId) {
+    // 첫 턴에서만 줄 수 있는 것들.
+    args.push('-C', opts.cwd, '-s', sandboxFlag(opts.permissionMode))
+    for (const dir of opts.workspaces) args.push('--add-dir', dir)
+  } else {
+    // resume에는 -s가 없지만 config override는 받는다.
+    args.push('-c', `sandbox_mode=${tomlLiteral(sandboxFlag(opts.permissionMode))}`)
+  }
+
+  // Codex에는 --append-system-prompt가 없다. 앱의 persona/도구 지시는 config로 주입한다.
+  if (opts.systemPrompt) {
+    args.push('-c', `developer_instructions=${tomlLiteral(opts.systemPrompt)}`)
+  }
+
+  // MCP 는 --mcp-config 플래그가 없다. config 오버라이드로 주입한다.
+  if (opts.codexMcp) {
+    const { command, args: mcpArgs, env } = opts.codexMcp
+    args.push('-c', `mcp_servers.waifu.command=${tomlLiteral(command)}`)
+    args.push('-c', `mcp_servers.waifu.args=[${mcpArgs.map(tomlLiteral).join(',')}]`)
+    for (const [k, v] of Object.entries(env)) {
+      args.push('-c', `mcp_servers.waifu.env.${k}=${tomlLiteral(v)}`)
+    }
+  }
+
+  // 프롬프트는 마지막 위치 인자다.
+  args.push(prompt)
+  return args
+}
+
+const STDERR_TAIL_LIMIT = 4000
 
 export class CodexBackend implements AgentBackend {
   readonly kind: BackendKind = 'codex'
@@ -52,6 +103,8 @@ export class CodexBackend implements AgentBackend {
   private _sessionId: string | null = null
   private _busy = false
   private opts: SessionOpts | null = null
+  private stopping: Promise<void> | null = null
+  private readonly interrupted = new WeakSet<ChildProcessWithoutNullStreams>()
 
   get sessionId(): string | null {
     return this._sessionId
@@ -83,10 +136,10 @@ export class CodexBackend implements AgentBackend {
   async send(text: string): Promise<void> {
     const opts = this.opts
     if (!opts) throw new Error('백엔드가 시작되지 않았다')
-    if (this.child) throw new Error('이전 턴이 아직 끝나지 않았다')
+    if (this.child || this.stopping) throw new Error('이전 턴이 아직 끝나지 않았다')
 
     this._busy = true
-    const args = this.buildArgs(opts, text)
+    const args = buildCodexArgs(opts, text, this._sessionId)
 
     const child = spawn(opts.bin, args, {
       cwd: opts.cwd,
@@ -99,9 +152,14 @@ export class CodexBackend implements AgentBackend {
     const reader = new NdjsonReader()
     const mapper = new CodexEventMapper()
     let stderr = ''
+    let spawnFailed = false
 
     const consume = (lines: string[]): void => {
-      for (const raw of parseLines(lines)) {
+      // stop timeout 뒤 늦게 도착한 이전 프로세스 출력은 새 Task에 섞이면 안 된다.
+      if (this.child !== child || this.interrupted.has(child) || spawnFailed) return
+      for (const raw of parseLines(lines, () => {
+        process.stderr.write('[codex] JSON이 아닌 stdout 한 줄을 건너뛰었다\n')
+      })) {
         for (const ev of mapper.map(raw)) this.emit(ev)
       }
     }
@@ -112,62 +170,41 @@ export class CodexBackend implements AgentBackend {
 
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (c: string) => {
-      stderr += c
+      stderr = (stderr + c).slice(-STDERR_TAIL_LIMIT)
       process.stderr.write(`[codex] ${c}`)
     })
 
     child.on('error', (err) => {
+      if (spawnFailed || this.child !== child || this.interrupted.has(child)) return
+      spawnFailed = true
       this._busy = false
-      this.child = null
-      this.emit({ type: 'error', message: `실행 실패: ${err.message}`, kind: 'not-found' })
+      for (const ev of codexSpawnErrorEvents(err.message)) this.emit(ev)
     })
 
     child.on('close', (code) => {
-      consume(reader.flush())
+      // stop timeout 후 새 프로세스가 시작됐다면 이전 close가 현재 상태를 지우면 안 된다.
+      if (this.child !== child) return
+
+      const wasInterrupted = this.interrupted.has(child)
+      if (!wasInterrupted) consume(reader.flush())
       this.child = null
       this._busy = false
 
-      // 턴의 성패는 여기서 정해진다. item 단위 error 는 경고일 수 있어 신뢰할 수 없다.
-      const exitEvents = codexExitEvents(code, stderr)
-      if (exitEvents.length) {
-        for (const ev of exitEvents) this.emit(ev)
-      } else if (!mapper.sawTurnCompleted) {
-        // 정상 종료했는데 turn.completed 를 못 봤다면 출력이 잘렸다는 뜻이다.
-        this.emit({ type: 'result', text: mapper.resultText, isError: false })
+      // spawn error 뒤에도 close가 오므로 같은 실패를 두 번 올리지 않는다.
+      // 사용자 중단도 실패 result로 바꾸지 않는다. 현재 프로토콜에는 cancelled 상태가 없다.
+      if (!spawnFailed && !wasInterrupted) {
+        for (const ev of codexCompletionEvents(
+          code,
+          stderr,
+          mapper.sawTurnCompleted,
+          mapper.resultText,
+          mapper.turnFailureMessage
+        )) {
+          this.emit(ev)
+        }
       }
       this.emit({ type: 'exit', code })
     })
-  }
-
-  private buildArgs(opts: SessionOpts, prompt: string): string[] {
-    const args = ['exec']
-
-    // resume 은 첫 턴과 받는 플래그가 다르다. 섞으면 CLI 가 거부한다.
-    if (this._sessionId) args.push('resume', this._sessionId)
-
-    args.push('--json', '--skip-git-repo-check')
-
-    if (opts.model) args.push('-m', opts.model)
-
-    if (!this._sessionId) {
-      // 첫 턴에서만 줄 수 있는 것들.
-      args.push('-C', opts.cwd, '-s', sandboxFlag(opts.permissionMode))
-      for (const dir of opts.workspaces) args.push('--add-dir', dir)
-    }
-
-    // MCP 는 --mcp-config 플래그가 없다. config 오버라이드로 주입한다.
-    if (opts.codexMcp) {
-      const { command, args: mcpArgs, env } = opts.codexMcp
-      args.push('-c', `mcp_servers.waifu.command=${tomlLiteral(command)}`)
-      args.push('-c', `mcp_servers.waifu.args=[${mcpArgs.map(tomlLiteral).join(',')}]`)
-      for (const [k, v] of Object.entries(env)) {
-        args.push('-c', `mcp_servers.waifu.env.${k}=${tomlLiteral(v)}`)
-      }
-    }
-
-    // 프롬프트는 마지막 위치 인자다.
-    args.push(prompt)
-    return args
   }
 
   /** 프로세스를 죽인다. 다음 send 는 같은 thread_id 로 이어붙는다. */
@@ -176,17 +213,33 @@ export class CodexBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {
+    if (this.stopping) return this.stopping
     const child = this.child
     if (!child) return
-    this.child = null
-    this._busy = false
-    child.kill()
-    await new Promise<void>((resolve) => {
+    this.interrupted.add(child)
+
+    const waitForStop = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 2000)
       child.once('close', () => {
         clearTimeout(timer)
         resolve()
       })
+      try {
+        child.kill()
+      } catch {
+        clearTimeout(timer)
+        resolve()
+      }
     })
+    this.stopping = waitForStop
+
+    try {
+      await waitForStop
+    } finally {
+      // 2초 안에 close가 안 와도 다음 턴은 열되, 늦은 이벤트는 identity guard가 버린다.
+      if (this.child === child) this.child = null
+      this._busy = false
+      this.stopping = null
+    }
   }
 }

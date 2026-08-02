@@ -79,6 +79,15 @@ export class Waifu {
   private reminderTimer: NodeJS.Timeout | null = null
   /** 지금 턴이 속한 작업. 에이전트의 task_* 툴은 이걸 대상으로 한다. */
   private current: Task | null = null
+  /**
+   * voice 설정의 라이브 스냅샷.
+   *
+   * this.config 는 시작 시점 값으로 굳어 있다 — config:set 은 store 캐시를 새 객체로
+   * 갈아끼울 뿐 이 인스턴스가 든 참조는 안 바꾼다. say() 가 this.config.voice 를 쓰면
+   * enabled/engineUrl/speakerId/speedScale 변경이 재시작 전엔 먹지 않는다. 그래서 voice 만
+   * 따로 들고 updateVoice 로 갱신한다.
+   */
+  private voice: WaifuConfig['voice']
 
   constructor(
     private readonly config: WaifuConfig,
@@ -89,6 +98,12 @@ export class Waifu {
     this.active = config.backend.active
     this.backend = createBackend(this.active)
     this.unsubscribe = this.backend.onEvent((e) => this.onBackendEvent(e))
+    this.voice = config.voice
+  }
+
+  /** config:set 이 voice 를 바꾸면 즉시 반영한다. 재시작을 요구하지 않는다. */
+  updateVoice(voice: WaifuConfig['voice']): void {
+    this.voice = voice
   }
 
   async start(cwd: string): Promise<void> {
@@ -613,16 +628,16 @@ export class Waifu {
       ...(args.motion ? { motion: String(args.motion) } : {})
     }
 
-    if (!this.config.voice.enabled || !speech) {
+    if (!this.voice.enabled || !speech) {
       this.toAvatar(cmd)
-      return this.config.voice.enabled ? 'ok (speech_ja 가 없어 무음 자막만 띄웠다)' : 'ok (음성 꺼짐)'
+      return this.voice.enabled ? 'ok (speech_ja 가 없어 무음 자막만 띄웠다)' : 'ok (음성 꺼짐)'
     }
 
     try {
       const { audio, visemes } = await synthesize(speech, {
-        engineUrl: this.config.voice.engineUrl,
-        speakerId: this.config.voice.speakerId,
-        speedScale: this.config.voice.speedScale
+        engineUrl: this.voice.engineUrl,
+        speakerId: this.voice.speakerId,
+        speedScale: this.voice.speedScale
       })
       this.toAvatar({ ...cmd, audio, visemes })
       return 'ok'
@@ -810,10 +825,6 @@ export class Waifu {
             message: `아바타 제어 채널이 붙지 않았다 (${status}). 표정과 모션이 동작하지 않는다.`
           })
         }
-        break
-      }
-
-      case 'session':
         // 세션 키를 작업에 못 박아야 나중에 --resume 으로 이어붙일 수 있다.
         if (this.current) {
           this.current = this.tasks.update(this.current.id, {
@@ -822,6 +833,7 @@ export class Waifu {
           })
         }
         break
+      }
 
       case 'tool-start':
         this.toAvatar({ type: 'status', state: 'working' })

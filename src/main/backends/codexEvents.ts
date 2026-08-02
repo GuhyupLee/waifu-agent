@@ -35,11 +35,14 @@ interface CodexEvent {
   thread_id?: string
   item?: CodexItem
   usage?: Record<string, number>
+  message?: string
+  error?: string | { message?: string }
 }
 
 export class CodexEventMapper {
   private lastText = ''
   private turnCompleted = false
+  private turnFailure: string | null = null
 
   /** 마지막 assistant 발화. Codex 는 result 이벤트에 본문을 싣지 않는다. */
   get resultText(): string {
@@ -48,6 +51,10 @@ export class CodexEventMapper {
 
   get sawTurnCompleted(): boolean {
     return this.turnCompleted
+  }
+
+  get turnFailureMessage(): string | null {
+    return this.turnFailure
   }
 
   map(raw: unknown): BackendEvent[] {
@@ -68,14 +75,15 @@ export class CodexEventMapper {
 
       case 'turn.completed':
         this.turnCompleted = true
-        return [{ type: 'result', text: this.lastText, isError: false }]
+        // 프로세스 종료 코드까지 0이어야 성공이다. close 전에는 확정하지 않는다.
+        return []
 
-      // 실제 캡처에서 본 적은 없지만 이름이 대칭이라 방어해둔다.
-      case 'turn.failed':
-        return [
-          { type: 'error', message: this.lastText || '턴이 실패했다', kind: 'unknown' },
-          { type: 'result', text: this.lastText, isError: true }
-        ]
+      // 실패 result도 close에서 한 번만 낸다. 여기서 내면 비정상 종료 때 중복된다.
+      case 'turn.failed': {
+        const nested = typeof e.error === 'object' ? e.error?.message : e.error
+        this.turnFailure = nested ?? e.message ?? (this.lastText || 'Codex 턴이 실패했다')
+        return []
+      }
 
       default:
         return []
@@ -126,6 +134,50 @@ export function codexExitEvents(code: number | null, stderr: string): BackendEve
   const message = stderr.trim().slice(-400) || `codex 가 종료 코드 ${code} 로 끝났다`
   return [
     { type: 'error', message, kind: classifyError(message) },
+    { type: 'result', text: '', isError: true }
+  ]
+}
+
+/**
+ * 프로세스 종료와 turn.completed를 함께 본 최종 판정.
+ *
+ * 종료 코드 0만으로 성공 처리하면 stdout이 중간에 잘리거나 CLI가 계약을 바꾼 경우를 정상
+ * 완료로 오인한다. Codex 턴은 `turn.completed`와 정상 종료가 모두 있어야 성공이다.
+ */
+export function codexCompletionEvents(
+  code: number | null,
+  stderr: string,
+  sawTurnCompleted: boolean,
+  partialText: string,
+  turnFailureMessage: string | null = null
+): BackendEvent[] {
+  const exitEvents = codexExitEvents(code, stderr)
+  if (exitEvents.length > 0) return exitEvents
+
+  if (turnFailureMessage !== null) {
+    const message = turnFailureMessage || 'Codex 턴이 실패했다'
+    return [
+      { type: 'error', message, kind: classifyError(message) },
+      { type: 'result', text: partialText, isError: true }
+    ]
+  }
+
+  if (sawTurnCompleted) {
+    return [{ type: 'result', text: partialText, isError: false }]
+  }
+
+  const message = 'codex가 정상 종료했지만 turn.completed 이벤트를 보내지 않았다'
+  return [
+    { type: 'error', message, kind: 'unknown' },
+    { type: 'result', text: partialText, isError: true }
+  ]
+}
+
+/** spawn 자체가 실패해도 소비자가 작업을 종료 상태로 옮길 수 있게 terminal result를 함께 낸다. */
+export function codexSpawnErrorEvents(cause: string): BackendEvent[] {
+  const message = `실행 실패: ${cause}`
+  return [
+    { type: 'error', message, kind: 'not-found' },
     { type: 'result', text: '', isError: true }
   ]
 }

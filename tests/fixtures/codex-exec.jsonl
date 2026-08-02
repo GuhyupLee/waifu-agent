@@ -1,8 +1,8 @@
-{"type":"thread.started","thread_id":"019fc10d-ac86-74e1-bbe3-56d06dc038af"}
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000001"}
 {"type":"item.completed","item":{"id":"item_0","type":"error","message":"Under-development features enabled: enable_mcp_apps. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in <HOME>\\.codex\\config.toml."}}
 {"type":"turn.started"}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I’ll run the requested command."}}
 {"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'echo hello'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'echo hello'","aggregated_output":"hello\r\n","exit_code":0,"status":"completed"}}
 {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"done"}}
-{"type":"turn.completed","usage":{"input_tokens":33303,"cached_input_tokens":22016,"cache_write_input_tokens":0,"output_tokens":54,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}

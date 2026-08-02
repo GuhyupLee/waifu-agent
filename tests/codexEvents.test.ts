@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { BackendEvent } from '../src/shared/protocol'
-import { CodexEventMapper, codexExitEvents } from '../src/main/backends/codexEvents'
+import {
+  CodexEventMapper,
+  codexCompletionEvents,
+  codexExitEvents,
+  codexSpawnErrorEvents
+} from '../src/main/backends/codexEvents'
 import { NdjsonReader, parseLines } from '../src/main/backends/ndjson'
 
 /** 실제 `codex exec --json` 출력을 그대로 재생한다. 손으로 만든 목이 아니다. */
@@ -15,6 +20,7 @@ function replay(): { events: BackendEvent[]; mapper: CodexEventMapper } {
     for (const obj of parseLines(reader.push(raw.slice(i, i + 61)))) events.push(...mapper.map(obj))
   }
   for (const obj of parseLines(reader.flush())) events.push(...mapper.map(obj))
+  events.push(...codexCompletionEvents(0, '', mapper.sawTurnCompleted, mapper.resultText))
   return { events, mapper }
 }
 
@@ -29,7 +35,7 @@ describe('CodexEventMapper — 실제 exec 캡처 재생', () => {
     expect(s).toHaveLength(1)
     expect(s[0]!.backend).toBe('codex')
     // Codex 는 session_id 가 아니라 thread_id 다. 여기를 틀리면 resume 이 안 된다.
-    expect(s[0]!.sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(s[0]!.sessionId).toBe('00000000-0000-4000-8000-000000000001')
   })
 
   it('완성된 agent_message 만 텍스트로 올린다', () => {
@@ -86,5 +92,56 @@ describe('codexExitEvents', () => {
   it('인증 실패를 auth 로 분류한다', () => {
     const evts = codexExitEvents(1, 'Please run codex login to authenticate')
     expect((evts[0] as Extract<BackendEvent, { type: 'error' }>).kind).toBe('auth')
+  })
+})
+
+describe('codexCompletionEvents', () => {
+  it('종료 코드 0과 turn.completed가 모두 있어야 성공 result를 낸다', () => {
+    expect(codexCompletionEvents(0, '', true, 'done')).toEqual([
+      { type: 'result', text: 'done', isError: false }
+    ])
+  })
+
+  it('정상 종료라도 turn.completed가 없으면 잘린 턴으로 실패 처리한다', () => {
+    const events = codexCompletionEvents(0, '', false, 'partial')
+    expect(events.map((event) => event.type)).toEqual(['error', 'result'])
+    expect((events[1] as Extract<BackendEvent, { type: 'result' }>).isError).toBe(true)
+    expect((events[1] as Extract<BackendEvent, { type: 'result' }>).text).toBe('partial')
+  })
+
+  it('비정상 종료는 turn.completed 유무보다 종료 코드를 우선한다', () => {
+    const events = codexCompletionEvents(7, 'fatal', true, 'done')
+    expect(events.map((event) => event.type)).toEqual(['error', 'result'])
+    expect((events[0] as Extract<BackendEvent, { type: 'error' }>).message).toBe('fatal')
+    expect(only(events, 'result')[0]!.isError).toBe(true)
+  })
+
+  it('turn.completed를 봐도 close 전에는 성공 result를 내지 않는다', () => {
+    const mapper = new CodexEventMapper()
+    expect(mapper.map({ type: 'turn.completed' })).toEqual([])
+    const events = codexCompletionEvents(9, 'late failure', mapper.sawTurnCompleted, 'done')
+    expect(only(events, 'result')).toEqual([{ type: 'result', text: '', isError: true }])
+  })
+
+  it('turn.failed는 close에서 실패 result를 정확히 한 번 만든다', () => {
+    const mapper = new CodexEventMapper()
+    expect(mapper.map({ type: 'turn.failed', error: { message: 'turn broke' } })).toEqual([])
+    const events = codexCompletionEvents(
+      0,
+      '',
+      mapper.sawTurnCompleted,
+      mapper.resultText,
+      mapper.turnFailureMessage
+    )
+    expect(only(events, 'error')).toHaveLength(1)
+    expect(only(events, 'result')).toEqual([{ type: 'result', text: '', isError: true }])
+  })
+})
+
+describe('codexSpawnErrorEvents', () => {
+  it('spawn 실패도 error와 terminal 실패 result를 함께 낸다', () => {
+    const events = codexSpawnErrorEvents('ENOENT')
+    expect(events.map((event) => event.type)).toEqual(['error', 'result'])
+    expect(only(events, 'result')).toEqual([{ type: 'result', text: '', isError: true }])
   })
 })

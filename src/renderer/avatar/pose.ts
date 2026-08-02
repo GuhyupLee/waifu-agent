@@ -170,6 +170,48 @@ export function clampAngle(v: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, v))
 }
 
+/** 드래그 축소 범위. 어떤 위치에서 잡아도 전신이 들어오되 너무 작아지지 않는 구간. */
+export const DRAG_ZOOM_MIN = 0.45
+export const DRAG_ZOOM_MAX = 0.65
+/**
+ * 손 아래로 매달린 몸을 캔버스 높이의 이 배수로 본다. 1 이면 캔버스만큼 길다고
+ * 가정하는 셈이라 실제보다 조금 크게 잡는다 — 살짝 과하게 축소해 잘리지 않는 쪽으로 기운다.
+ */
+const DRAG_BODY_SPAN_Y = 1
+/** 손 오른쪽으로 뻗는 몸 폭을 캔버스 폭의 이 배수로 본다. 세로보다 좁아 앵커가 끝에 붙을 때만 제약이 된다. */
+const DRAG_BODY_SPAN_X = 0.6
+/** 알파 실루엣과 흔들리는 옷·머리카락도 끝에 붙지 않도록 15% 안전 여백을 둔다. */
+const DRAG_FIT_SAFETY = 0.85
+
+export interface DragZoomInput {
+  canvasWidth: number
+  canvasHeight: number
+  /** 손이 고정될 커서 위치(캔버스 좌상단 기준 CSS px). */
+  anchorX: number
+  anchorY: number
+}
+
+/**
+ * 드래그로 오른손을 커서에 고정하면 몸이 그 지점에서 아래·오른쪽으로 뻗어
+ * 좁은 오버레이 창 밖으로 잘린다. 카메라를 다시 맞추는(fitCamera) 대신 드래그 동안만
+ * `camera.zoom` 을 줄여(=축소) 전신이 들어오게 한다.
+ *
+ * 커서가 캔버스에서 얼마나 내려오고 오른쪽으로 치우쳤는지로 필요한 축소율을 잡는다.
+ * 손 위·왼쪽에는 몸이 거의 없으므로 몸이 실제로 뻗는 두 방향(아래, tether 방향=오른쪽)만 본다.
+ * 값이 작을수록 더 축소한다. 결과는 [DRAG_ZOOM_MIN, DRAG_ZOOM_MAX] 로 눌러
+ * 어떤 위치에서도 몸이 지나치게 작아지지도, 여전히 잘리지도 않게 한다.
+ */
+export function dragZoomTarget(input: DragZoomInput): number {
+  const { canvasWidth, canvasHeight, anchorX, anchorY } = input
+  if (canvasWidth <= 0 || canvasHeight <= 0) return DRAG_ZOOM_MAX
+  // 앵커 아래 남은 공간에 캔버스 높이만큼 긴 몸을 담으려면 그 비율만큼 축소한다.
+  const belowFit = Math.max(0, canvasHeight - anchorY) / (canvasHeight * DRAG_BODY_SPAN_Y)
+  // 오른쪽으로 남은 공간에 몸 폭을 담는다. 앵커가 오른쪽 끝에 붙을수록 더 축소.
+  const rightFit = Math.max(0, canvasWidth - anchorX) / (canvasWidth * DRAG_BODY_SPAN_X)
+  const fit = Math.min(belowFit, rightFit) * DRAG_FIT_SAFETY
+  return Math.max(DRAG_ZOOM_MIN, Math.min(DRAG_ZOOM_MAX, fit))
+}
+
 /** 모델 전체가 화면에 들어오도록 카메라를 맞춘다. 모델마다 키가 달라 고정값을 쓸 수 없다. */
 export function fitCameraToObject(
   camera: THREE.PerspectiveCamera,

@@ -28,20 +28,49 @@ export interface Synthesized {
 const QUERY_TIMEOUT_MS = 10_000
 const SYNTH_TIMEOUT_MS = 60_000
 
-async function post(url: string, timeoutMs: number, body?: string): Promise<Response> {
+export interface TtsRuntime {
+  fetch: typeof fetch
+  queryTimeoutMs: number
+  synthesisTimeoutMs: number
+}
+
+const DEFAULT_RUNTIME: TtsRuntime = {
+  fetch: (...args) => fetch(...args),
+  queryTimeoutMs: QUERY_TIMEOUT_MS,
+  synthesisTimeoutMs: SYNTH_TIMEOUT_MS
+}
+
+/**
+ * 응답 헤더뿐 아니라 JSON/WAV 본문을 전부 읽을 때까지 같은 제한 시간을 적용한다.
+ * fetch() 자체가 끝나도 느리거나 고장 난 엔진이 본문을 영원히 보내지 않을 수 있다.
+ */
+async function withinTimeout<T>(
+  label: string,
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(url, {
-      method: 'POST',
-      signal: controller.signal,
-      ...(body === undefined
-        ? {}
-        : { headers: { 'content-type': 'application/json' }, body })
-    })
-  } finally {
-    clearTimeout(timer)
-  }
+  let settled = false
+
+  return await new Promise<T>((resolve, reject) => {
+    const finish = (callback: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      callback()
+    }
+
+    const timer = setTimeout(() => {
+      if (settled) return
+      controller.abort()
+      finish(() => reject(new Error(`${label} 시간 초과 (${timeoutMs}ms)`)))
+    }, timeoutMs)
+
+    void operation(controller.signal).then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error))
+    )
+  })
 }
 
 /** 엔진이 살아 있는지. 설정 화면에서 확인 버튼에 쓴다. */
@@ -54,26 +83,38 @@ export async function pingEngine(engineUrl: string): Promise<string | null> {
   }
 }
 
-export async function synthesize(text: string, opts: TtsOptions): Promise<Synthesized> {
+export async function synthesize(
+  text: string,
+  opts: TtsOptions,
+  runtime: TtsRuntime = DEFAULT_RUNTIME
+): Promise<Synthesized> {
   const base = opts.engineUrl.replace(/\/+$/, '')
 
   // 1) 텍스트 → 운율 쿼리. text 는 쿼리스트링으로 넘긴다 (본문이 아니다).
   const queryUrl = `${base}/audio_query?text=${encodeURIComponent(text)}&speaker=${opts.speakerId}`
-  const queryRes = await post(queryUrl, QUERY_TIMEOUT_MS)
-  if (!queryRes.ok) {
-    throw new Error(`audio_query 실패 (${queryRes.status}). 엔진이 켜져 있는지 확인해라.`)
-  }
-  const query = (await queryRes.json()) as AudioQuery
+  const query = await withinTimeout('audio_query', runtime.queryTimeoutMs, async (signal) => {
+    const queryRes = await runtime.fetch(queryUrl, { method: 'POST', signal })
+    if (!queryRes.ok) {
+      throw new Error(`audio_query 실패 (${queryRes.status}). 엔진이 켜져 있는지 확인해라.`)
+    }
+    return (await queryRes.json()) as AudioQuery
+  })
 
   // 속도는 여기서 반영해야 립싱크 타이밍과 실제 음성이 일치한다.
   query.speedScale = opts.speedScale
 
   // 2) 쿼리 → WAV
   const synthUrl = `${base}/synthesis?speaker=${opts.speakerId}`
-  const synthRes = await post(synthUrl, SYNTH_TIMEOUT_MS, JSON.stringify(query))
-  if (!synthRes.ok) throw new Error(`synthesis 실패 (${synthRes.status})`)
-
-  const wav = Buffer.from(await synthRes.arrayBuffer())
+  const wav = await withinTimeout('synthesis', runtime.synthesisTimeoutMs, async (signal) => {
+    const synthRes = await runtime.fetch(synthUrl, {
+      method: 'POST',
+      signal,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(query)
+    })
+    if (!synthRes.ok) throw new Error(`synthesis 실패 (${synthRes.status})`)
+    return Buffer.from(await synthRes.arrayBuffer())
+  })
   const { frames, estimatedDurationSec } = buildVisemeTrack(query)
 
   return {

@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder'
 import { describe, expect, it } from 'vitest'
 import { NdjsonReader, parseLines } from '../src/main/backends/ndjson'
 
@@ -19,6 +20,16 @@ describe('NdjsonReader', () => {
     expect(r.push('{"te')).toEqual([])
     expect(r.push('xt":"안녕')).toEqual([])
     expect(r.push('하세요"}\n')).toEqual(['{"text":"안녕하세요"}'])
+  })
+
+  it('UTF-8 한글 바이트 한가운데서 잘려도 Node 디코더와 함께 복원한다', () => {
+    const r = new NdjsonReader()
+    const decoder = new StringDecoder('utf8')
+    const bytes = Buffer.from('{"text":"안녕"}\n', 'utf8')
+    const split = bytes.indexOf(Buffer.from('녕', 'utf8')) + 1
+
+    expect(r.push(decoder.write(bytes.subarray(0, split)))).toEqual([])
+    expect(r.push(decoder.end(bytes.subarray(split)))).toEqual(['{"text":"안녕"}'])
   })
 
   it('개행 없이 끝난 마지막 줄을 flush 로 회수한다', () => {

@@ -11,7 +11,14 @@ import {
   createVRMAnimationClip
 } from '@pixiv/three-vrm-animation'
 import type { Emotion, Viseme } from '@shared/protocol'
-import { applyIdlePose, applyLivelinessOverlay, clampAngle, damp, fitCameraToObject } from './pose'
+import {
+  applyIdlePose,
+  applyLivelinessOverlay,
+  clampAngle,
+  damp,
+  dragZoomTarget,
+  fitCameraToObject
+} from './pose'
 import { BlinkModel, SaccadeModel, Spring, loopVariation } from './liveliness'
 import { HangPhysics } from './hang'
 import { PatDetector, TOUCH_REGIONS, findTouchedRegion, pickReactionMotion } from './touch'
@@ -40,6 +47,8 @@ const DRAG_MOTION = 'mouse-tether-right'
 /** 손을 놓은 뒤 앵커 보정을 원점으로 되돌리는 짧은 완충 시간. */
 const DRAG_RELEASE_SECONDS = 0.32
 const DRAG_OFFSET_STIFFNESS = 14
+/** 드래그 축소를 목표로 끌어당기는 감쇠 세기. 시간상수 ≈ 1/값 ≈ 0.17초. */
+const DRAG_ZOOM_STIFFNESS = 6
 /** 진행 방향으로 아주 조금만 기울인다. 큰 값은 걷기보다 넘어지는 것처럼 보인다. */
 const ROAM_LEAN = THREE.MathUtils.degToRad(4)
 const ROAM_LEAN_STIFFNESS = 8
@@ -123,6 +132,13 @@ export class VrmScene {
   private dragReleaseRemaining = 0
   private dragRestoreMotion: MotionSnapshot | null = null
   private refitAfterDrag = false
+  /**
+   * 드래그 동안만 카메라를 축소해 손에 매달린 전신이 좁은 창에 들어오게 한다.
+   * BrowserWindow 재배치나 fitCamera 재호출 없이, 매 프레임 pinDragGripToCursor 직전에
+   * projection 만 갱신하므로 손-커서 고정이 흐트러지지 않는다. 1 이면 평소 프레이밍.
+   */
+  private dragZoom = 1
+  private dragZoomTarget = 1
   private readonly dragGripWorld = new THREE.Vector3()
   private readonly dragTargetWorld = new THREE.Vector3()
   private readonly dragProjected = new THREE.Vector3()
@@ -715,6 +731,14 @@ export class VrmScene {
     this.dragAnchor = { x, y }
     this.dragReleaseRemaining = 0
     this.dragOffset.set(0, 0, 0)
+    // 손이 잡힌 위치로 필요한 축소율을 정한다. 아래로/오른쪽으로 뻗을 몸이
+    // 창을 넘지 않도록, 앵커가 아래·오른쪽에 가까울수록 더 축소한다.
+    this.dragZoomTarget = dragZoomTarget({
+      canvasWidth: this.canvas.clientWidth,
+      canvasHeight: this.canvas.clientHeight,
+      anchorX: x,
+      anchorY: y
+    })
     return true
   }
 
@@ -761,8 +785,18 @@ export class VrmScene {
     this.renderer.setSize(w, h, false)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
-    if (this.dragGrip || this.dragReleaseRemaining > 0) this.refitAfterDrag = true
-    else this.fitCamera()
+    if (this.dragGrip || this.dragReleaseRemaining > 0) {
+      this.refitAfterDrag = true
+      // 창 크기가 바뀌면 앵커 기준 남는 공간도 바뀐다. 축소율을 새 크기로 다시 잡는다.
+      if (this.dragAnchor) {
+        this.dragZoomTarget = dragZoomTarget({
+          canvasWidth: w,
+          canvasHeight: h,
+          anchorX: this.dragAnchor.x,
+          anchorY: this.dragAnchor.y
+        })
+      }
+    } else this.fitCamera()
   }
 
   private fitCamera(): void {
@@ -826,6 +860,9 @@ export class VrmScene {
     this.applyExpressions(delta)
     this.vrm?.update(delta)
 
+    // pin 은 현재 projection 으로 손을 커서에 맞춘다. 그러니 zoom(=projection)을 여기서 먼저
+    // 갱신해야 축소 도중에도 손이 커서에서 밀리지 않는다.
+    this.updateDragZoom(delta)
     // 믹서와 humanoid 복사가 끝난 실제 손 위치를 사용해야 한 프레임도 미끄러지지 않는다.
     this.pinDragGripToCursor()
     // 본이 최종 위치로 간 뒤에 만져졌는지 본다. 그 전에 하면 한 프레임 전 자세로 판정한다.
@@ -1005,6 +1042,21 @@ export class VrmScene {
    * 손의 현재 clip-space 깊이를 유지한 채 커서 NDC 를 같은 월드 평면으로 역투영한다.
    * 두 점의 차이만큼 hanger 전체를 옮기면 손은 고정되고 자식인 몸만 진자처럼 회전한다.
    */
+  /**
+   * 드래그 축소를 목표로 감쇠시키고, 값이 바뀐 프레임에만 projection 을 다시 만든다.
+   * pinDragGripToCursor 직전에 불러 손-커서 고정이 새 projection 위에서 이뤄지게 한다.
+   */
+  private updateDragZoom(delta: number): void {
+    const next =
+      Math.abs(this.dragZoom - this.dragZoomTarget) < 1e-4
+        ? this.dragZoomTarget
+        : damp(this.dragZoom, this.dragZoomTarget, DRAG_ZOOM_STIFFNESS, delta)
+    if (next === this.dragZoom) return
+    this.dragZoom = next
+    this.camera.zoom = next
+    this.camera.updateProjectionMatrix()
+  }
+
   private pinDragGripToCursor(): void {
     const anchor = this.dragAnchor
     const grip = this.dragGrip
@@ -1032,6 +1084,9 @@ export class VrmScene {
     this.dragReleaseRemaining = 0
     this.dragGrip = null
     this.dragOffset.set(0, 0, 0)
+    // 손을 놓자마자가 아니라 release 완충이 끝나는 지금 원래 프레이밍으로 되돌린다 —
+    // interactive→idle crossfade 와 같은 시간축에서 부드럽게 확대 복원된다.
+    this.dragZoomTarget = 1
     const restore = this.dragRestoreMotion
     this.dragRestoreMotion = null
     if (restore && this.clips.has(restore.name)) {
@@ -1054,6 +1109,10 @@ export class VrmScene {
     this.headYawSpring.snap(this.headYaw)
     this.headPitchSpring.snap(this.headPitch)
     this.saccade.snap({ x: this.gaze.x, y: this.gaze.y })
+    // 자는 사이 쌓인 delta 로 축소가 어중간하게 굳지 않게 목표로 바로 스냅한다.
+    this.dragZoom = this.dragZoomTarget
+    this.camera.zoom = this.dragZoom
+    this.camera.updateProjectionMatrix()
   }
 
   private disposeVrm(): void {
@@ -1084,6 +1143,11 @@ export class VrmScene {
     this.dragReleaseRemaining = 0
     this.dragRestoreMotion = null
     this.refitAfterDrag = false
+    // 새 모델은 fitCamera 로 다시 맞춰진다. 축소가 남아 있으면 그 위에 겹쳐 작게 뜬다.
+    this.dragZoom = 1
+    this.dragZoomTarget = 1
+    this.camera.zoom = 1
+    this.camera.updateProjectionMatrix()
     this.roaming = false
     this.roamMotionActive = false
     this.roamRestoreMotion = null

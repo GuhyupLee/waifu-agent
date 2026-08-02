@@ -1,0 +1,2 @@
+// Node가 `node exec ...`로 실행하는, 모델 호출 없는 CodexBackend lifecycle 테스트 도우미.
+setInterval(() => {}, 1_000)

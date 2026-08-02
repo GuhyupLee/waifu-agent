@@ -2,6 +2,7 @@ import type { AvatarCommand, WaifuApi } from '@shared/protocol'
 import { VrmScene } from './scene'
 import { SpeechPlayer } from './speech'
 import { Recorder } from './recorder'
+import { RecordingCoordinator } from './recording'
 
 declare global {
   interface Window {
@@ -14,11 +15,26 @@ if (!(canvas instanceof HTMLCanvasElement)) throw new Error('avatar-canvas 를 �
 
 const subtitleEl = document.getElementById('subtitle')
 const statusEl = document.getElementById('status')
+const waifu = window.waifu
 
 const scene = new VrmScene(canvas)
 const speech = new SpeechPlayer()
-const recorder = new Recorder()
-const waifu = window.waifu
+let recordingCoordinator: RecordingCoordinator
+const recorder = new Recorder({
+  onAutoStop: (wavBase64, reason) => {
+    recordingCoordinator.autoStopped(wavBase64)
+    showSubtitle(
+      reason === 'limit'
+        ? '녹음이 2분 제한에 도달해 자동으로 전송됐다.'
+        : '마이크 처리기가 중단되어 녹음을 종료했다.'
+    )
+  }
+})
+recordingCoordinator = new RecordingCoordinator(recorder, {
+  onRecording: (on) => waifu.sendAvatarEvent({ type: 'recording', on }),
+  onRecorded: (wavBase64) => waifu.sendAvatarEvent({ type: 'recorded', wavBase64 }),
+  onError: (error) => showSubtitle(`마이크를 쓸 수 없다: ${error.message}`)
+})
 
 /** 설정 화면에서 조절하는 값들. main 이 tuning 명령으로 갱신한다. */
 const tuning = {
@@ -222,21 +238,8 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
       break
 
     case 'record':
-      if (cmd.on) {
-        try {
-          await recorder.start()
-          waifu.sendAvatarEvent({ type: 'recording', on: true })
-          showSubtitle('🎤 듣는 중…')
-        } catch (err) {
-          // 마이크 권한이 없거나 장치가 없는 흔한 경우. 조용히 실패하면 왜 안 되는지 모른다.
-          showSubtitle(`마이크를 쓸 수 없다: ${(err as Error).message}`)
-          waifu.sendAvatarEvent({ type: 'recording', on: false })
-        }
-      } else if (recorder.recording) {
-        const wavBase64 = await recorder.stop()
-        waifu.sendAvatarEvent({ type: 'recording', on: false })
-        waifu.sendAvatarEvent({ type: 'recorded', wavBase64 })
-      }
+      recordingCoordinator.request(cmd.on)
+      showSubtitle(cmd.on ? '🎤 듣는 중… 다시 단축키를 누르면 전송한다.' : '음성을 처리하는 중…')
       break
 
     case 'tuning':
