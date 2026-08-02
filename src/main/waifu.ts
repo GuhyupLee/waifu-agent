@@ -4,6 +4,7 @@ import { IPC } from '@shared/protocol'
 import type {
   AvatarCommand,
   BackendEvent,
+  BackendKind,
   Emotion,
   PanelEvent,
   PermissionDecision,
@@ -11,7 +12,8 @@ import type {
   WaifuConfig,
   WaifuToolName
 } from '@shared/protocol'
-import { ClaudeCodeBackend, writeSessionSettings } from './backends/claudeCode'
+import { writeSessionSettings } from './backends/claudeCode'
+import { backendSettings, createBackend, otherBackend } from './backends'
 import type { AgentBackend } from './backends/types'
 import { ControlServer } from './control/server'
 import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
@@ -26,8 +28,14 @@ import { synthesize } from './voice/tts'
  *  - 위로: 에이전트가 턴 도중 MCP 툴을 불러 아바타를 제어한다
  */
 export class Waifu {
-  private readonly backend: AgentBackend = new ClaudeCodeBackend()
+  private backend: AgentBackend
+  private active: BackendKind
+  private unsubscribe: () => void
   private readonly control: ControlServer
+  /** 현재 작업 루트. 페일오버로 백엔드를 갈아탈 때 다시 필요하다. */
+  private cwd = ''
+  /** 한도 때문에 이미 갈아탔는지. 무한 왕복을 막는다. */
+  private failedOver = false
   /** 대기 중인 권한 승인. 훅이 응답을 기다리며 붙잡혀 있다. */
   private readonly pending = new Map<string, (d: PermissionDecision) => void>()
   /** 렌더러가 실제로 로드에 성공한 모션 이름. 에이전트에게 이 목록으로만 답한다. */
@@ -39,37 +47,62 @@ export class Waifu {
     private readonly panel: () => BrowserWindow | null
   ) {
     this.control = new ControlServer((tool, args) => this.onTool(tool, args))
-    this.backend.onEvent((e) => this.onBackendEvent(e))
+    this.active = config.backend.active
+    this.backend = createBackend(this.active)
+    this.unsubscribe = this.backend.onEvent((e) => this.onBackendEvent(e))
   }
 
   async start(cwd: string): Promise<void> {
     await this.control.start()
+    this.cwd = cwd
+    await this.startBackend()
+  }
 
+  private async startBackend(resumeSessionId?: string): Promise<void> {
     const mcp = mcpLaunchSpec()
+    const mcpEnv = { ELECTRON_RUN_AS_NODE: '1', ...this.control.childEnv() }
     const mcpConfig = {
-      mcpServers: {
-        waifu: {
-          command: mcp.command,
-          args: [...mcp.args],
-          env: { ELECTRON_RUN_AS_NODE: '1', ...this.control.childEnv() }
-        }
-      }
+      mcpServers: { waifu: { command: mcp.command, args: [...mcp.args], env: mcpEnv } }
     }
 
     await this.backend.start({
-      bin: this.config.backend.claudeCode.bin,
-      cwd,
+      ...backendSettings(this.config, this.active),
+      cwd: this.cwd,
       workspaces: this.config.permission.workspaces,
       permissionMode: this.config.permission.mode,
       mcpConfigJson: JSON.stringify(mcpConfig),
+      // Codex 에는 --mcp-config 플래그가 없어 형태가 다르다.
+      codexMcp: { command: mcp.command, args: [...mcp.args], env: mcpEnv },
       settingsPath: writeSessionSettings(permissionHookCommand()),
       systemPrompt: buildSystemPrompt(this.config),
-      ...(this.config.backend.claudeCode.model
-        ? { model: this.config.backend.claudeCode.model }
-        : {}),
+      ...(resumeSessionId ? { resumeSessionId } : {}),
       // 훅은 claude 가 spawn 하므로 claude 의 환경을 통해서만 주소를 받을 수 있다.
       extraEnv: { ELECTRON_RUN_AS_NODE: '', ...this.control.childEnv() }
     })
+  }
+
+  /**
+   * 다른 백엔드로 갈아탄다.
+   *
+   * 세션은 이어받지 않는다 — Claude Code 의 session id 와 Codex 의 thread id 는
+   * 서로 다른 저장소에 있어서 교차 재개가 불가능하다. 사용자에게 맥락이 끊겼음을 알린다.
+   */
+  private async switchBackend(to: BackendKind, why: string): Promise<void> {
+    if (to === this.active) return
+    this.unsubscribe()
+    await this.backend.stop()
+
+    this.active = to
+    this.backend = createBackend(to)
+    this.unsubscribe = this.backend.onEvent((e) => this.onBackendEvent(e))
+    await this.startBackend()
+
+    this.toPanel({
+      type: 'notice',
+      level: 'warn',
+      message: `${why} ${to} 로 전환했다. 이전 대화 맥락은 이어지지 않는다.`
+    })
+    process.stdout.write(`[waifu] 백엔드 전환 -> ${to} (${why})\n`)
   }
 
   send(text: string): void {
@@ -259,9 +292,11 @@ export class Waifu {
         break
       case 'error':
         this.toAvatar({ type: 'status', state: 'error' })
+        // rate-limit 로 분류된 실패도 전환 대상이다. 한쪽이 막히면 다른 쪽으로 계속 일한다.
+        if (e.kind === 'rate-limit') this.maybeFailover('사용량 한도에 걸려')
         break
       case 'rate-limit':
-        // status 가 allowed 가 아니면 한도에 걸린 것이다. resetsAt 으로 재개를 예약할 수 있다.
+        // status 가 allowed 가 아니면 한도에 걸린 것이다.
         if (e.info.status !== 'allowed') {
           const at = e.info.resetsAt ? new Date(e.info.resetsAt * 1000).toLocaleTimeString() : '미상'
           this.toPanel({
@@ -269,11 +304,26 @@ export class Waifu {
             level: 'warn',
             message: `사용량 한도(${e.info.rateLimitType})에 걸렸다. ${at} 에 풀린다.`
           })
+          this.maybeFailover('사용량 한도에 걸려')
         }
         break
       default:
         break
     }
+  }
+
+  /**
+   * 한도에 걸렸을 때 반대편 백엔드로 넘긴다.
+   *
+   * 한 번만 한다. 양쪽 다 막힌 상황에서 계속 왕복하면 아무 일도 못 하면서
+   * 프로세스만 계속 띄웠다 죽인다.
+   */
+  private maybeFailover(why: string): void {
+    if (!this.config.backend.failover || this.failedOver) return
+    this.failedOver = true
+    void this.switchBackend(otherBackend(this.active), why).catch((err: unknown) => {
+      this.toPanel({ type: 'notice', level: 'error', message: `백엔드 전환 실패: ${String(err)}` })
+    })
   }
 
   private toAvatar(cmd: AvatarCommand): void {

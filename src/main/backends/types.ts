@@ -22,6 +22,11 @@ export interface SessionOpts {
    * `--append-system-prompt-file` 은 이 버전에 없다.
    */
   systemPrompt?: string
+  /**
+   * Codex 용 MCP 등록 정보. Codex 에는 `--mcp-config` 플래그가 없어서
+   * `-c mcp_servers.waifu.*` 오버라이드로 넣어야 한다.
+   */
+  codexMcp?: { command: string; args: string[]; env: Record<string, string> }
   model?: string
   /**
    * 자식 CLI 환경에 덧붙일 값. 제어 서버 주소와 토큰이 여기로 간다.

@@ -33,7 +33,11 @@ function sanitize(line) {
     for (const k of INIT_DROP) delete obj[k]
   }
   // 남아 있는 홈 경로를 치환한다 (transcript_path, cwd 등).
-  return JSON.stringify(obj).split(homedir()).join('<HOME>')
+  // 직렬화된 뒤에는 Windows 경로의 백슬래시가 이중으로 escape 되어 있으므로
+  // 두 형태를 모두 지워야 한다. 한쪽만 지우면 사용자명이 남는다.
+  const home = homedir()
+  const homeEscaped = JSON.stringify(home).slice(1, -1)
+  return JSON.stringify(obj).split(home).join('<HOME>').split(homeEscaped).join('<HOME>')
 }
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
