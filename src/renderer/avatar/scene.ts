@@ -317,6 +317,11 @@ export class VrmScene {
       this.pendingMotionRequest = { name, loop }
       return true
     }
+    if (reason === 'interactive' && this.lastSwitchMixerTime === mixer.time) {
+      // 포인터 제약은 다음 프레임으로 미룰 수 없다. delta=0 평가로 방금 예약된 fade의
+      // 실제 weight만 동기화한 뒤 tether가 현재 보이는 포즈에서 출발하게 한다.
+      mixer.update(0)
+    }
 
     const previous = this.currentAction
     const previousRole = this.currentMotionRole
@@ -340,6 +345,7 @@ export class VrmScene {
 
     const next = mixer.clipAction(clip)
     if (previous === next && loop && this.currentMotionLoop && reason === 'request') return true
+    if (previous === next && !loop && !this.currentMotionLoop && reason === 'request') return true
 
     const blendSeconds = transitionSeconds(previousRole, nextRole)
     let nextTime = startTime

@@ -50,6 +50,14 @@ export function mcpLaunchSpec(): ChildLaunchSpec {
   }
 }
 
+/**
+ * PreToolUse 훅으로 등록할 명령 문자열.
+ *
+ * **주의**: 이 명령은 Electron 바이너리를 실행한다. 실행 환경에 `ELECTRON_RUN_AS_NODE=1`
+ * 이 없으면 스크립트가 아니라 Electron 앱이 떠서 훅이 조용히 죽는다. 훅 설정에는 env 를
+ * 넣을 자리가 없으므로, claude 를 띄울 때 그 환경에 넣어야 한다 (waifu.ts 의 extraEnv).
+ * 증상이 "권한 창이 안 뜨고 전부 통과됨" 이라 알아채기 어렵다.
+ */
 export function permissionHookCommand(): string {
   const path = resolveChildPath(permissionHookPath, 'out/main/permission-hook-*.js')
   // 훅은 셸 명령 문자열 하나로 등록된다. 경로에 공백이 있을 수 있으니 반드시 따옴표로 싼다.

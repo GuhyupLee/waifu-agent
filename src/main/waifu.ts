@@ -105,8 +105,14 @@ export class Waifu {
       settingsPath: writeSessionSettings(permissionHookCommand()),
       systemPrompt: buildSystemPrompt(this.config),
       ...(resumeSessionId ? { resumeSessionId } : {}),
-      // 훅은 claude 가 spawn 하므로 claude 의 환경을 통해서만 주소를 받을 수 있다.
-      extraEnv: { ELECTRON_RUN_AS_NODE: '', ...this.control.childEnv() }
+      // 훅은 claude 가 spawn 하므로 claude 의 환경을 통해서만 이 값들을 받는다.
+      //
+      // ELECTRON_RUN_AS_NODE 를 빼거나 빈 문자열로 두면 훅이 조용히 죽는다 —
+      // 훅 명령이 Electron 바이너리인데, 이 변수가 없으면 스크립트를 실행하는 대신
+      // Electron 앱으로 뜬다. 증상은 "권한 창이 안 뜨고 전부 통과됨" 이라
+      // 안전망이 사라진 걸 알아채기 어렵다. 실제로 이 상태로 한 번 만들었었다.
+      // claude 자신은 Electron 앱이 아니라 이 변수의 영향을 받지 않는다.
+      extraEnv: { ELECTRON_RUN_AS_NODE: '1', ...this.control.childEnv() }
     })
   }
 
