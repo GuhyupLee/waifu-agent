@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_AMBIENT_MOTION,
@@ -22,6 +23,15 @@ describe('motion transition graph', () => {
     expect(motionRole('idle-breathe', false)).toBe('one-shot')
   })
 
+  it('keeps the runtime loop catalog equal to the generated manifest', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../resources/motions/manifest.json', import.meta.url), 'utf8')
+    ) as { files: Array<{ name: string; loop: boolean }> }
+    for (const motion of manifest.files) {
+      expect(effectiveMotionLoop(motion.name, true), motion.name).toBe(motion.loop)
+    }
+  })
+
   it('enters pointer tether quickly and leaves it with a longer settle', () => {
     expect(transitionSeconds('ambient', 'interactive')).toBeLessThan(
       transitionSeconds('interactive', 'ambient')
@@ -32,6 +42,10 @@ describe('motion transition graph', () => {
     expect(transitionSeconds('ambient', 'ambient')).toBeGreaterThan(
       transitionSeconds('one-shot', 'one-shot')
     )
+  })
+
+  it('does not blend the first VRMA from a possible T-pose binding', () => {
+    expect(transitionSeconds(null, 'ambient')).toBe(0)
   })
 
   it('does not immediately repeat an ambient motion when an alternative exists', () => {

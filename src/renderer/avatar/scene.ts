@@ -73,6 +73,7 @@ export class VrmScene {
   /** 단발 동작이 끝난 뒤 이어서 재생할 이전 반복 동작. */
   private resumeMotion: MotionSnapshot | null = null
   private ambientRemaining = 0
+  private lookAtResumeRemaining = 0
   /** fade가 끝난 action만 stop하여 급한 연속 전환에서도 weight가 튀지 않게 한다. */
   private readonly retiringActions = new Map<THREE.AnimationAction, number>()
   private readonly clips = new Map<string, THREE.AnimationClip>()
@@ -247,7 +248,12 @@ export class VrmScene {
   playMotion(name: string, requestedLoop: boolean): boolean {
     const clip = this.clips.get(name)
     if (!clip || !this.mixer) return false
-    const loop = effectiveMotionLoop(name, requestedLoop)
+    // tether는 내부적으로 계속 도는 제약 포즈다. 외부에서 실수로 loop=false로 불러도
+    // LoopOnce 마지막 프레임에 interactive 상태가 고착되지 않게 항상 반복한다.
+    const loop = name.startsWith('mouse-tether-') || effectiveMotionLoop(name, requestedLoop)
+    if (requestedLoop && !loop) {
+      console.warn(`[avatar] '${name}'은 이음새 없는 반복용 모션이 아니므로 한 번만 재생한다.`)
+    }
 
     // 대화 중 새 모션이 와도 손을 놓기 전까지는 tether 를 끊지 않는다. 마지막 요청을 복귀 대상으로 둔다.
     if (this.dragGrip && name !== DRAG_MOTION) {
@@ -270,7 +276,171 @@ export class VrmScene {
     this.currentMotionRole = null
     this.resumeMotion = null
     this.ambientRemaining = 0
+    this.lookAtResumeRemaining = 0
     if (!previous && this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
+  }
+
+  /**
+   * AnimationMixer의 action을 실제 상태 그래프에 연결한다.
+   * 단발 동작은 이전 loop를 복귀 지점으로 보존하고, ambient끼리는 호흡 위상을 맞춘다.
+   */
+  private switchMotion(
+    name: string,
+    loop: boolean,
+    reason: MotionStartReason,
+    startTime = 0
+  ): boolean {
+    const clip = this.clips.get(name)
+    const mixer = this.mixer
+    if (!clip || !mixer) return false
+
+    const previous = this.currentAction
+    const previousRole = this.currentMotionRole
+    const nextRole = motionRole(name, loop)
+
+    if (reason === 'request') {
+      if (loop) {
+        // 명시적인 지속 모션은 앞으로 돌아갈 새 기준 상태다.
+        this.resumeMotion = null
+      } else if (
+        previous &&
+        this.currentMotionName &&
+        this.currentMotionLoop &&
+        previousRole !== 'interactive'
+      ) {
+        this.resumeMotion = this.currentSnapshot()
+      }
+    } else if (reason === 'ambient') {
+      this.resumeMotion = null
+    }
+
+    const next = mixer.clipAction(clip)
+    if (previous === next && loop && this.currentMotionLoop && reason === 'request') return true
+
+    const blendSeconds = transitionSeconds(previousRole, nextRole)
+    let nextTime = startTime
+    if (previous && previous !== next && previousRole === 'ambient' && nextRole === 'ambient') {
+      const previousDuration = previous.getClip().duration
+      if (previousDuration > 0 && clip.duration > 0) {
+        nextTime = ((previous.time % previousDuration) / previousDuration) * clip.duration
+      }
+    }
+
+    this.retiringActions.delete(next)
+    next
+      .reset()
+      .stopFading()
+      .setEffectiveTimeScale(1)
+      .setEffectiveWeight(1)
+      .setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+    next.clampWhenFinished = !loop
+    if (clip.duration > 0) {
+      next.time = loop
+        ? ((nextTime % clip.duration) + clip.duration) % clip.duration
+        : Math.max(0, Math.min(nextTime, Math.max(0, clip.duration - 1e-4)))
+    }
+
+    if (previous && previous !== next) this.retireAction(previous, blendSeconds)
+    if (previous && previous !== next && blendSeconds > 0) next.fadeIn(blendSeconds)
+    next.play()
+
+    this.currentAction = next
+    this.currentMotionName = name
+    this.currentMotionLoop = loop
+    this.currentMotionRole = nextRole
+    this.ambientRemaining =
+      nextRole === 'ambient' ? ambientHoldSeconds(Math.random()) : Number.POSITIVE_INFINITY
+
+    // 생활 idle에서는 커서 시선을 살리고, 의미 있는 동작의 VRMA 시선 트랙은 보존한다.
+    if (this.vrm?.lookAt) {
+      const recoveringToAmbient = nextRole === 'ambient' && previousRole !== null && previousRole !== 'ambient'
+      this.lookAtResumeRemaining = recoveringToAmbient ? blendSeconds : 0
+      this.vrm.lookAt.autoUpdate = nextRole === 'ambient' && !recoveringToAmbient
+    }
+    return true
+  }
+
+  private currentSnapshot(): MotionSnapshot | null {
+    if (!this.currentAction || !this.currentMotionName) return null
+    return {
+      name: this.currentMotionName,
+      loop: this.currentMotionLoop,
+      time: this.currentAction.time
+    }
+  }
+
+  private retireAction(action: THREE.AnimationAction, seconds: number): void {
+    const currentWeight = action.getEffectiveWeight()
+    action.stopFading().setEffectiveWeight(currentWeight)
+    if (seconds <= 0 || currentWeight <= 1e-4) {
+      action.stop()
+      this.retiringActions.delete(action)
+      return
+    }
+    action.fadeOut(seconds)
+    this.retiringActions.set(action, seconds)
+  }
+
+  private handleMotionFinished(action: THREE.AnimationAction): void {
+    if (action !== this.currentAction || this.currentMotionLoop || this.currentMotionRole === 'interactive') {
+      return
+    }
+
+    const restore = this.resumeMotion
+    this.resumeMotion = null
+    if (restore && this.clips.has(restore.name)) {
+      this.switchMotion(restore.name, restore.loop, 'restore', restore.time)
+      return
+    }
+    this.startAmbient(true)
+  }
+
+  private startAmbient(preferDefault: boolean): boolean {
+    const name =
+      preferDefault && this.clips.has(DEFAULT_AMBIENT_MOTION)
+        ? DEFAULT_AMBIENT_MOTION
+        : pickAmbientMotion(this.clips, this.currentMotionName, Math.random())
+    if (!name) {
+      this.stopMotion()
+      return false
+    }
+    return this.switchMotion(name, true, 'ambient')
+  }
+
+  private updateMotionDirector(delta: number): void {
+    for (const [action, remaining] of this.retiringActions) {
+      if (action === this.currentAction) {
+        this.retiringActions.delete(action)
+        continue
+      }
+      const nextRemaining = remaining - delta
+      if (nextRemaining <= 0) {
+        action.stop()
+        this.retiringActions.delete(action)
+      } else {
+        this.retiringActions.set(action, nextRemaining)
+      }
+    }
+
+    if (this.lookAtResumeRemaining > 0) {
+      this.lookAtResumeRemaining -= delta
+      if (this.lookAtResumeRemaining <= 0 && this.currentMotionRole === 'ambient' && this.vrm?.lookAt) {
+        this.vrm.lookAt.autoUpdate = true
+      }
+    }
+
+    if (this.currentMotionRole === 'ambient' && !this.dragGrip) {
+      this.ambientRemaining -= delta
+      if (this.ambientRemaining <= 0) {
+        const next = pickAmbientMotion(this.clips, this.currentMotionName, Math.random())
+        if (next && next !== this.currentMotionName) this.switchMotion(next, true, 'ambient')
+        else this.ambientRemaining = ambientHoldSeconds(Math.random())
+      }
+    }
+
+    if (!this.currentAction && this.retiringActions.size === 0 && this.vrm?.lookAt) {
+      this.vrm.lookAt.autoUpdate = true
+    }
   }
 
   /**
@@ -291,14 +461,12 @@ export class VrmScene {
 
     this.dragRestoreMotion =
       this.dragRestoreMotion ??
-      (this.currentMotionName && this.currentMotionName !== DRAG_MOTION
-        ? {
-            name: this.currentMotionName,
-            loop: this.currentMotionLoop,
-            time: this.currentAction?.time ?? 0
-          }
-        : null)
-    if (!this.playMotion(DRAG_MOTION, true, true)) return false
+      (this.currentMotionLoop && this.currentMotionName !== DRAG_MOTION
+        ? this.currentSnapshot()
+        : this.resumeMotion)
+    // 단발 동작의 한가운데로 돌아가면 팔이 순간적으로 재개돼 어색하다. 드래그는 그 동작의
+    // 복귀 loop를 보존하고, loop가 없으면 놓은 뒤 기본 생활 idle로 정착한다.
+    if (!this.switchMotion(DRAG_MOTION, true, 'interactive')) return false
 
     this.dragGrip = grip
     this.dragAnchor = { x, y }
@@ -382,8 +550,9 @@ export class VrmScene {
     // 복사하므로, 그 뒤에 정규화 본을 건드리면 그 프레임에서는 조용히 버려진다.
     //   1) 믹서(VRMA)  2) 절차적 보정  3) vrm.update  4) render
     this.mixer?.update(delta)
+    this.updateMotionDirector(delta)
     // VRMA 가 도는 동안 여기서 rotation 을 대입하면 믹서 결과를 덮어쓴다.
-    if (!this.currentAction && this.vrm?.humanoid) {
+    if (!this.currentAction && this.retiringActions.size === 0 && this.vrm?.humanoid) {
       applyIdlePose(this.vrm.humanoid, {
         elapsed: this.elapsed,
         yaw: this.headYaw,
@@ -516,13 +685,9 @@ export class VrmScene {
     this.dragOffset.set(0, 0, 0)
     const restore = this.dragRestoreMotion
     this.dragRestoreMotion = null
-    if (restore && this.clips.has(restore.name) && this.playMotion(restore.name, restore.loop, true)) {
-      const action = this.currentAction
-      if (action) {
-        const duration = action.getClip().duration
-        action.time = restore.loop && duration > 0 ? restore.time % duration : Math.min(restore.time, duration)
-      }
-    } else this.stopMotion()
+    if (restore && this.clips.has(restore.name)) {
+      this.switchMotion(restore.name, restore.loop, 'restore', restore.time)
+    } else this.startAmbient(true)
   }
 
   /**
@@ -547,6 +712,11 @@ export class VrmScene {
     this.currentAction = null
     this.currentMotionName = null
     this.currentMotionLoop = false
+    this.currentMotionRole = null
+    this.resumeMotion = null
+    this.ambientRemaining = 0
+    this.lookAtResumeRemaining = 0
+    this.retiringActions.clear()
     this.dragAnchor = null
     this.dragGrip = null
     this.dragOffset.set(0, 0, 0)

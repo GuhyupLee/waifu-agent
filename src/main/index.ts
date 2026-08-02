@@ -10,6 +10,7 @@ import { assetUrl, handleAssetProtocol, registerAssetScheme } from './assetProto
 import { loadConfig, saveConfig } from './config/store'
 import { Waifu } from './waifu'
 import { checkStt, transcribe } from './voice/stt'
+import { DiscordBot } from './discord/bot'
 import type { PermissionDecision } from '@shared/protocol'
 
 // 둘 다 app 준비 **전에** 걸어야 한다. 준비 후에 부르면 조용히 무시된다.
@@ -144,6 +145,32 @@ function registerIpc(): void {
 
 /** 녹음 중인지. 핫키가 토글이라 상태를 들고 있어야 한다. */
 let recording = false
+let discord: DiscordBot | null = null
+
+/**
+ * Discord 봇을 띄운다.
+ *
+ * 토큰이나 허용 목록이 없으면 시작하지 않는다 — 이건 외부에서 PC 를 조종하는
+ * 입구라, 실수로 열어두는 쪽보다 안 켜지는 쪽이 낫다.
+ */
+function startDiscord(config: WaifuConfig): void {
+  discord = new DiscordBot(config.discord, {
+    onNotice: (level, message) => panelWindow?.webContents.send(IPC.panelEvent, {
+      type: 'notice',
+      level,
+      message
+    }),
+    onRequest: (text, reply) => {
+      if (!waifu) {
+        reply('아직 준비되지 않았다. 잠시 후 다시 말해줘.')
+        return
+      }
+      // origin 이 'discord' 면 권한이 상한까지 눌린다.
+      waifu.send(text, 'discord', reply)
+    }
+  })
+  discord.start()
+}
 
 /**
  * 절전 복귀 처리.
@@ -348,6 +375,7 @@ void app.whenReady().then(async () => {
   }
 
   registerPowerHandlers()
+  startDiscord(config)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindows(loadConfig())
@@ -358,6 +386,7 @@ app.on('before-quit', () => {
   if (gazeTimer) clearInterval(gazeTimer)
   // 핫키를 풀지 않으면 앱이 죽은 뒤에도 다른 앱이 그 조합을 못 쓰는 경우가 있다.
   globalShortcut.unregisterAll()
+  discord?.stop()
   void waifu?.stop()
 })
 

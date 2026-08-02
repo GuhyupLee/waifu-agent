@@ -76,7 +76,7 @@ export function ambientHoldSeconds(unitRandom: number): number {
 
 /** 가중치가 있는 자동 idle 선택. 현재 것 외에 선택지가 있으면 바로 반복하지 않는다. */
 export function pickAmbientMotion(
-  available: ReadonlySet<string>,
+  available: Pick<ReadonlySet<string>, 'has'>,
   current: string | null,
   unitRandom: number
 ): string | null {

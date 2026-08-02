@@ -268,6 +268,27 @@ export interface WaifuConfig {
     /** 자막 언어. TTS 는 항상 일본어. */
     subtitleLang: string
   }
+  /**
+   * 밖에서 부탁하고 결과를 받는 통로.
+   *
+   * 이건 **외부에서 내 PC 를 조종하는 입구**다. 토큰이 없거나 허용 목록이 비어 있으면
+   * 아예 켜지지 않는다 — 실수로 열어두는 쪽보다 안 켜지는 쪽이 낫다.
+   */
+  discord: {
+    enabled: boolean
+    /** 봇 토큰. 사용자가 Discord 개발자 포털에서 발급한다. */
+    token: string
+    /**
+     * 이 사용자 ID 들의 DM 만 받는다. 비어 있으면 봇이 시작되지 않는다.
+     * 봇 초대 링크를 아는 누구나 PC 를 조종할 수 있으면 안 된다.
+     */
+    allowedUserIds: string[]
+    /**
+     * 원격 요청에 허용할 최대 권한. 'auto'(맡겨두기)는 고를 수 없다 —
+     * 눈앞에 없는 사람이 무제한 자동 실행을 시키는 건 위험하다.
+     */
+    maxPermission: 'readonly' | 'guarded'
+  }
 }
 
 export const DEFAULT_CONFIG: WaifuConfig = {
@@ -300,6 +321,12 @@ export const DEFAULT_CONFIG: WaifuConfig = {
     name: 'ミオ',
     instructions: '',
     subtitleLang: 'ko'
+  },
+  discord: {
+    enabled: false,
+    token: '',
+    allowedUserIds: [],
+    maxPermission: 'guarded'
   }
 }
 

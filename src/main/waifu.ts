@@ -21,6 +21,8 @@ import { buildSystemPrompt } from './persona/prompt'
 import { MemoryStore } from './persona/memory'
 import { TaskStore } from './tasks/store'
 import { SnapshotStore } from './safety/snapshots'
+import { clampRemotePermission } from './discord/bot'
+import type { PermissionMode } from '@shared/protocol'
 import {
   extractCommand,
   extractFilePath,
@@ -121,7 +123,27 @@ export class Waifu {
     process.stdout.write(`[waifu] 백엔드 전환 -> ${to} (${why})\n`)
   }
 
-  send(text: string, origin: TaskOrigin = 'desktop'): void {
+  /**
+   * 이번 턴이 원격 요청인지. 권한 판정에 쓴다.
+   *
+   * 훅은 `session_id` 밖에 모르지만, 실제로는 한 번에 한 턴만 돈다.
+   * 현재 Task 의 origin 을 보면 충분하다.
+   */
+  private effectivePermission(): PermissionMode {
+    const base = this.config.permission.mode
+    if (this.current?.origin !== 'discord') return base
+    return clampRemotePermission(base, this.config.discord.maxPermission)
+  }
+
+  /**
+   * 원격 요청의 답신 통로. 턴이 끝나면 여기로 결과를 보낸다.
+   * 데스크탑 요청이면 null 이다 — 화면에 이미 보이는 걸 다시 보낼 이유가 없다.
+   */
+  private replyTo: ((text: string) => void) | null = null
+
+  send(text: string, origin: TaskOrigin = 'desktop', replyTo?: (text: string) => void): void {
+    this.replyTo = replyTo ?? null
+
     // 이어갈 작업이 없으면 새로 만든다. 제목은 첫 발화에서 따고, 에이전트가
     // 더 정확한 이름을 알게 되면 task_update 로 고친다.
     if (!this.current || this.current.state === 'done' || this.current.state === 'failed') {
@@ -363,8 +385,10 @@ export class Waifu {
   private askPermission(args: Record<string, unknown>): Promise<PermissionDecision> {
     const toolName = String(args.toolName ?? 'unknown')
     const input = args.input
+    // 원격 요청이면 설정보다 낮은 권한이 적용된다.
+    const mode = this.effectivePermission()
 
-    if (this.config.permission.mode === 'readonly') {
+    if (mode === 'readonly') {
       return Promise.resolve({
         behavior: 'deny',
         message: `'대화만 하기' 모드라 ${toolName} 을 실행하지 않았다.`
@@ -383,7 +407,7 @@ export class Waifu {
     const dangers = isShellTool(toolName) ? findDangers(extractCommand(input)) : []
 
     if (dangers.length === 0) {
-      if (this.config.permission.mode === 'auto') return Promise.resolve({ behavior: 'allow' })
+      if (mode === 'auto') return Promise.resolve({ behavior: 'allow' })
       if (this.config.permission.autoApprove.includes(toolName)) {
         return Promise.resolve({ behavior: 'allow' })
       }
@@ -455,8 +479,20 @@ export class Waifu {
         if (this.current) this.tasks.append(this.current.id, 'note', e.detail)
         break
 
-      case 'result':
+      case 'result': {
         this.toAvatar({ type: 'status', state: e.isError ? 'error' : 'idle' })
+
+        // 밖에서 부탁한 사람에게 결과를 돌려준다. 이게 없으면 "부탁하고 결과를 받는다" 가
+        // 성립하지 않는다.
+        const reply = this.replyTo
+        if (reply) {
+          const task = this.current
+          const bits = [e.text || '(응답 없음)']
+          if (task?.needsUser) bits.push(`\n확인 필요: ${task.needsUser}`)
+          else if (task?.nextAction) bits.push(`\n다음: ${task.nextAction}`)
+          reply(bits.join('\n'))
+        }
+
         if (this.current) {
           this.tasks.append(this.current.id, 'result', e.text)
           // 에이전트가 task_update 로 done/failed 를 적었으면 그 판단을 존중한다.
@@ -465,6 +501,7 @@ export class Waifu {
           if (e.isError) this.current = this.tasks.update(this.current.id, { state: 'failed' })
         }
         break
+      }
 
       case 'error':
         this.toAvatar({ type: 'status', state: 'error' })

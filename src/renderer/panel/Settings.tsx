@@ -185,6 +185,48 @@ export function Settings({ onClose }: { onClose: () => void }): React.JSX.Elemen
         </div>
       </Section>
 
+      <Section title="Discord 원격">
+        <div style={S.hint}>
+          밖에서 DM 으로 부탁하고 결과를 받는다. 토큰과 허용 사용자 ID 가 모두 있어야 켜진다.
+        </div>
+        <label style={S.check}>
+          <input
+            type="checkbox"
+            checked={config.discord.enabled}
+            onChange={(e) => patch({ discord: { ...config.discord, enabled: e.target.checked } })}
+          />
+          <span>켜기</span>
+        </label>
+        <Field
+          label="봇 토큰"
+          value={config.discord.token}
+          onCommit={(v) => patch({ discord: { ...config.discord, token: v.trim() } })}
+        />
+        <Field
+          label="허용할 Discord 사용자 ID (줄바꿈으로 구분)"
+          multiline
+          value={config.discord.allowedUserIds.join('\n')}
+          onCommit={(v) =>
+            patch({
+              discord: {
+                ...config.discord,
+                allowedUserIds: v.split('\n').map((s) => s.trim()).filter(Boolean)
+              }
+            })
+          }
+        />
+        {config.discord.enabled && config.discord.allowedUserIds.length === 0 && (
+          <div style={S.warn}>
+            허용 사용자가 없어 봇이 시작되지 않는다. 비워두면 아무나 들어올 수 있게 되므로
+            일부러 막아둔 것이다.
+          </div>
+        )}
+        <div style={S.hint}>
+          원격 요청은 최대 &apos;도와주기&apos; 까지만 허용된다. 눈앞에 없는 사람이 무제한 자동
+          실행을 시키지 못하게 한다.
+        </div>
+      </Section>
+
       <RecentChanges />
 
       {saving && <div style={S.hint}>저장 중…</div>}
