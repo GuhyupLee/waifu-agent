@@ -229,8 +229,7 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
       scene.applyTuning({
         hitAlpha: cmd.hitAlpha,
         swayStrength: cmd.swayStrength,
-        ambientMotion: cmd.ambientMotion,
-        scale: cmd.scale
+        ambientMotion: cmd.ambientMotion
       })
       break
 

@@ -25,11 +25,13 @@ import { clampRemotePermission } from './discord/bot'
 import {
   DEFAULT_ROAM,
   currentDisplayIndex,
+  cursorIsOnOtherDisplay,
   orderedDisplays,
   resolveTarget,
   restingSpot,
   roamTo
 } from './roaming'
+import { autonomyEnabled, decideIdleAction, nextIdleDelayMs } from './autonomy'
 import type { RoamHandle } from './roaming'
 import { ReminderStore, resolveReminderTime } from './reminders/store'
 import { RoutineStore } from './routines/store'
@@ -96,6 +98,51 @@ export class Waifu {
     // 30초면 분 단위 알림에 충분하고, 켜둬도 부담이 없다.
     this.reminderTimer = setInterval(() => this.fireDueReminders(), 30_000)
     this.fireDueReminders()
+    this.scheduleIdleAction()
+  }
+
+  /** 마지막으로 사용자와 주고받은 시각. 자율 행동이 끼어들지 판단하는 기준이다. */
+  private lastInteractionAt = Date.now()
+  private idleTimer: NodeJS.Timeout | null = null
+
+  /**
+   * 스스로 움직이게 한다.
+   *
+   * 아바타가 부를 때만 반응하면 "떠 있는 UI" 지 "살아 있는 것" 이 아니다.
+   * 다만 여기서 **말은 하지 않는다** — 먼저 말을 거는 건 알림의 몫이고 그건
+   * 방해 금지 시간을 지킨다. 여기서는 몸짓과 위치만 다룬다.
+   */
+  private scheduleIdleAction(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => {
+      this.runIdleAction()
+      this.scheduleIdleAction()
+    }, nextIdleDelayMs(Math.random()))
+  }
+
+  private runIdleAction(): void {
+    if (!autonomyEnabled(this.config)) return
+    const win = this.avatar()
+    if (!win || win.isDestroyed() || !win.isVisible()) return
+
+    const action = decideIdleAction(
+      {
+        idleMs: Date.now() - this.lastInteractionAt,
+        busy: this.backend.busy,
+        dragging: this.avatarDragging,
+        cursorOnOtherDisplay: cursorIsOnOtherDisplay(win),
+        motions: this.motions
+      },
+      Math.random()
+    )
+
+    if (action.kind === 'gesture') {
+      process.stdout.write(`[idle] 몸짓: ${action.motion}\n`)
+      this.toAvatar({ type: 'motion', name: action.motion, loop: false })
+    } else if (action.kind === 'follow') {
+      process.stdout.write('[idle] 커서가 있는 화면으로 이동\n')
+      void this.moveAvatar('cursor')
+    }
   }
 
   /**
@@ -205,6 +252,8 @@ export class Waifu {
 
   send(text: string, origin: TaskOrigin = 'desktop', replyTo?: (text: string) => void): void {
     this.replyTo = replyTo ?? null
+    // 방금 말을 걸었으니 한동안 딴짓하지 않는다.
+    this.lastInteractionAt = Date.now()
 
     // 이어갈 작업이 없으면 새로 만든다. 제목은 첫 발화에서 따고, 에이전트가
     // 더 정확한 이름을 알게 되면 task_update 로 고친다.
@@ -296,6 +345,7 @@ export class Waifu {
     await this.backend.stop()
     await this.control.stop()
     if (this.reminderTimer) clearInterval(this.reminderTimer)
+    if (this.idleTimer) clearTimeout(this.idleTimer)
     this.memory.close()
     this.tasks.close()
     this.snapshots.close()

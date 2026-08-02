@@ -36,7 +36,33 @@ export interface AvatarWindowOptions {
   margin: number
 }
 
-export const DEFAULT_AVATAR_WINDOW: AvatarWindowOptions = { width: 420, height: 640, margin: 24 }
+/**
+ * 기준 크기. 설정의 scale 이 여기에 곱해진다.
+ *
+ * 8등신 모델은 전신을 담으면 세로가 길어서, 창이 크면 화면을 꽤 차지한다.
+ * 데스크탑 마스코트는 옆에 있어도 거슬리지 않는 크기가 맞다 — 필요하면 키우면 된다.
+ */
+export const DEFAULT_AVATAR_WINDOW: AvatarWindowOptions = { width: 280, height: 430, margin: 24 }
+
+/**
+ * 겉보기 크기를 바꾼다.
+ *
+ * 모델을 키우는 게 아니라 **창을 키운다.** 카메라가 모델 바운딩 박스에 자동으로
+ * 맞추기 때문에, 모델 스케일을 올린 뒤 다시 맞추면 화면상 크기가 그대로다.
+ *
+ * 오른쪽 아래 모서리를 고정한 채 크기를 바꾼다. 왼쪽 위를 고정하면 커질 때
+ * 아바타가 화면 밖으로 밀려난다.
+ */
+export function applyAvatarScale(win: BrowserWindow, scale: number): void {
+  if (win.isDestroyed()) return
+  const clamped = Math.max(0.4, Math.min(2.5, scale))
+  const width = Math.round(DEFAULT_AVATAR_WINDOW.width * clamped)
+  const height = Math.round(DEFAULT_AVATAR_WINDOW.height * clamped)
+
+  const b = win.getBounds()
+  if (b.width === width && b.height === height) return
+  win.setBounds({ x: b.x + b.width - width, y: b.y + b.height - height, width, height })
+}
 
 function bottomRightOfWorkArea(o: AvatarWindowOptions): Rectangle {
   // workAreaSize 는 { width, height } 뿐이라 원점을 (0,0) 으로 가정하게 된다.

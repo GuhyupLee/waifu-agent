@@ -75,6 +75,22 @@ export function displayInDirection(
   return candidates[0]?.display ?? current
 }
 
+/**
+ * 커서가 아바타와 다른 화면에 있는지.
+ *
+ * 사용자가 있는 곳에 있는 게 가장 "살아 있는" 행동이라, 자율 이동의 가장 큰 근거다.
+ */
+export function cursorIsOnOtherDisplay(win: BrowserWindow): boolean {
+  if (win.isDestroyed()) return false
+  const b = win.getBounds()
+  const here = screen.getDisplayNearestPoint({
+    x: Math.round(b.x + b.width / 2),
+    y: Math.round(b.y + b.height / 2)
+  })
+  const there = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  return here.id !== there.id
+}
+
 /** 창이 지금 어느 디스플레이에 있는지 (순서 인덱스). */
 export function currentDisplayIndex(win: BrowserWindow): number {
   const b = win.getBounds()

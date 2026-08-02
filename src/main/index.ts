@@ -3,10 +3,16 @@ import { basename, extname, isAbsolute, join, resolve } from 'node:path'
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, powerMonitor, screen } from 'electron'
 import { IPC } from '@shared/protocol'
 import type { AvatarEvent, WaifuConfig } from '@shared/protocol'
-import { applyOverlaySwitches, createAvatarWindow, setAvatarInteractive } from './windows/avatarWindow'
+import {
+  applyAvatarScale,
+  applyOverlaySwitches,
+  createAvatarWindow,
+  setAvatarInteractive
+} from './windows/avatarWindow'
 import { createPanelWindow } from './windows/panelWindow'
 import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
 import { assetUrl, handleAssetProtocol, registerAssetScheme } from './assetProtocol'
+import { applyContentSecurityPolicy } from './csp'
 import { loadConfig, saveConfig } from './config/store'
 import { Waifu } from './waifu'
 import { checkStt, transcribe } from './voice/stt'
@@ -120,6 +126,9 @@ function registerIpc(): void {
     }
     // 조절값은 바로 반영한다. 슬라이더를 움직이며 맞추려면 즉시 보여야 한다.
     if (patch.avatar || patch.chat) sendTuning(next)
+    if (patch.avatar?.scale !== undefined && avatarWindow && !avatarWindow.isDestroyed()) {
+      applyAvatarScale(avatarWindow, next.avatar.scale)
+    }
     if (patch.avatar?.alwaysOnTop !== undefined && avatarWindow && !avatarWindow.isDestroyed()) {
       // 생성자 옵션만으로는 레벨이 floating 이라 작업표시줄 뒤로 간다.
       if (next.avatar.alwaysOnTop) avatarWindow.setAlwaysOnTop(true, 'screen-saver')
@@ -399,15 +408,20 @@ function verifyChildEntries(): void {
  * 문제를 놓치게 된다.
  */
 function forwardConsole(win: BrowserWindow, tag: string): void {
-  win.webContents.on('console-message', (_e, level, message) => {
-    // 0=verbose 1=info 2=warning 3=error. 잡음을 줄이려고 경고 이상만 올린다.
-    if (level >= 2) process.stderr.write(`[${tag}] ${message}\n`)
+  // 이벤트 객체 형태가 현재 API 다. 뒤따라오는 (level, message, ...) 인자들은 deprecated 이고
+  // 쓰면 Electron 이 매번 경고를 찍는다. level 도 숫자가 아니라 문자열이다.
+  win.webContents.on('console-message', (details) => {
+    if (details.level !== 'warning' && details.level !== 'error') return
+    const where = details.sourceId ? ` (${details.sourceId}:${details.lineNumber})` : ''
+    process.stderr.write(`[${tag}] ${details.message}${where}\n`)
   })
 }
 
 function createWindows(config: WaifuConfig): void {
   avatarWindow = createAvatarWindow()
   forwardConsole(avatarWindow, 'avatar:console')
+  // 저장된 크기를 시작할 때부터 반영한다. 안 그러면 기본 크기로 떴다가 설정을 만져야 바뀐다.
+  applyAvatarScale(avatarWindow, config.avatar.scale)
   panelWindow = createPanelWindow(config.persona.name)
 
   // once 가 아니라 on 이어야 한다 — 개발 중 HMR 로 페이지가 다시 로드되면 씬이 새로
@@ -425,6 +439,7 @@ let waifu: Waifu | null = null
 
 void app.whenReady().then(async () => {
   handleAssetProtocol()
+  applyContentSecurityPolicy()
   verifyChildEntries()
   registerIpc()
 

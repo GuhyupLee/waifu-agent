@@ -655,7 +655,9 @@ export class VrmScene {
       this.switchMotion(pending.name, pending.loop, 'request')
     }
 
-    if (this.currentMotionRole === 'ambient' && !this.dragGrip) {
+    // ambientEnabled 가 꺼져 있으면 지금 돌고 있는 것만 계속 재생하고 다음으로 넘기지 않는다.
+    // 여기서 검사하지 않으면 설정 화면의 스위치가 아무 일도 하지 않는다.
+    if (this.currentMotionRole === 'ambient' && !this.dragGrip && this.ambientEnabled) {
       this.ambientRemaining -= delta
       if (this.ambientRemaining <= 0) {
         const next = pickAmbientMotion(this.clips, this.currentMotionName, Math.random())
@@ -902,20 +904,13 @@ export class VrmScene {
    * 재시작을 요구하면 슬라이더를 움직이며 맞출 수가 없다. 여기 오는 것들은
    * 전부 다음 프레임부터 바로 적용된다.
    */
-  applyTuning(t: {
-    hitAlpha: number
-    swayStrength: number
-    ambientMotion: boolean
-    scale: number
-  }): void {
+  applyTuning(t: { hitAlpha: number; swayStrength: number; ambientMotion: boolean }): void {
     this.hitAlpha = t.hitAlpha
     this.hang.strength = t.swayStrength
     this.ambientEnabled = t.ambientMotion
-    if (this.hanger && Math.abs(this.hanger.scale.x - t.scale) > 0.001) {
-      this.hanger.scale.setScalar(t.scale)
-      // 크기가 바뀌면 프레이밍도 다시 잡아야 잘리거나 남는 여백이 생기지 않는다.
-      this.fitCamera()
-    }
+    // 크기는 여기서 다루지 않는다. 카메라가 모델 바운딩 박스에 자동으로 맞추므로
+    // 모델을 키운 뒤 다시 맞추면 화면상 크기가 그대로다 — 서로 상쇄된다.
+    // 겉보기 크기는 **창 크기**로 바꾼다 (main 의 applyAvatarScale).
   }
 
   /**
