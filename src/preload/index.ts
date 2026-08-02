@@ -3,8 +3,12 @@ import { IPC } from '@shared/protocol'
 import type {
   AvatarCommand,
   AvatarEvent,
+  Diagnostics,
   FileChange,
   PanelEvent,
+  StoredMemory,
+  StoredReminder,
+  StoredRoutine,
   PermissionDecision,
   WaifuApi,
   WaifuConfig
@@ -39,7 +43,17 @@ const api: WaifuApi = {
 
   listChanges: () => ipcRenderer.invoke(IPC.changesList) as Promise<FileChange[]>,
   undoChange: (id: string) =>
-    ipcRenderer.invoke(IPC.changesUndo, id) as Promise<{ ok: boolean; reason?: string }>
+    ipcRenderer.invoke(IPC.changesUndo, id) as Promise<{ ok: boolean; reason?: string }>,
+
+  listMemories: () => ipcRenderer.invoke(IPC.memoryList) as Promise<StoredMemory[]>,
+  forgetMemory: (key: string) => ipcRenderer.invoke(IPC.memoryForget, key) as Promise<boolean>,
+  listRoutines: () => ipcRenderer.invoke(IPC.routineList) as Promise<StoredRoutine[]>,
+  removeRoutine: (name: string) => ipcRenderer.invoke(IPC.routineRemove, name) as Promise<boolean>,
+  listReminders: () => ipcRenderer.invoke(IPC.reminderList) as Promise<StoredReminder[]>,
+  cancelReminder: (id: string) => ipcRenderer.invoke(IPC.reminderCancel, id) as Promise<boolean>,
+
+  diagnostics: () => ipcRenderer.invoke(IPC.diagnostics) as Promise<Diagnostics>,
+  pingVoice: (url: string) => ipcRenderer.invoke(IPC.pingVoice, url) as Promise<string | null>
 }
 
 contextBridge.exposeInMainWorld('waifu', api)

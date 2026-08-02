@@ -1,10 +1,12 @@
 import * as THREE from 'three'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { describe, expect, it, vi } from 'vitest'
 import { VrmScene } from '../src/renderer/avatar/scene'
 import type { MotionRole } from '../src/renderer/avatar/motionTransitions'
 
 interface MotionHarness {
   root: THREE.Object3D
+  modelLoadGeneration: number
   mixer: THREE.AnimationMixer
   clips: Map<string, THREE.AnimationClip>
   currentAction: THREE.AnimationAction | null
@@ -23,13 +25,22 @@ interface MotionHarness {
   actionWeights: Map<THREE.AnimationAction, number>
   motionBlend: unknown
   dragGrip: THREE.Object3D | null
+  dragReleaseRemaining: number
+  roaming: boolean
+  roamMotionActive: boolean
+  roamRestoreMotion: { name: string; loop: boolean; time: number } | null
+  roamPendingMotion: { name: string; loop: boolean } | null
+  roamLeanTarget: number
   vrm: null
-  switchMotion(name: string, loop: boolean, reason: 'request' | 'ambient' | 'restore'): boolean
+  switchMotion(name: string, loop: boolean, reason: 'request' | 'ambient' | 'restore' | 'roam'): boolean
   advanceMotionBlend(delta: number): void
   updateMotionDirector(delta: number): void
   handleMotionFinished(action: THREE.AnimationAction): void
   playMotion(name: string, loop: boolean): boolean
+  beginRoamMotion(name: string | null, direction: -1 | 0 | 1): boolean
+  endRoamMotion(): void
   readonly motionNames: string[]
+  loadVRM(url: string): Promise<unknown | null>
 }
 
 function constantClip(name: string, value: number, duration = 2): THREE.AnimationClip {
@@ -48,6 +59,7 @@ function createHarness(entries: Array<[string, THREE.AnimationClip]>): MotionHar
   const scene = Object.create(VrmScene.prototype) as MotionHarness
   Object.assign(scene, {
     root,
+    modelLoadGeneration: 0,
     mixer,
     clips: new Map(entries),
     currentAction: null,
@@ -66,6 +78,12 @@ function createHarness(entries: Array<[string, THREE.AnimationClip]>): MotionHar
     actionWeights: new Map<THREE.AnimationAction, number>(),
     motionBlend: null,
     dragGrip: null,
+    dragReleaseRemaining: 0,
+    roaming: false,
+    roamMotionActive: false,
+    roamRestoreMotion: null,
+    roamPendingMotion: null,
+    roamLeanTarget: 0,
     vrm: null
   })
   mixer.addEventListener('finished', ({ action }) => scene.handleMotionFinished(action))
@@ -152,5 +170,66 @@ describe('VrmScene motion mixer integration', () => {
     expect(scene.playMotion('mouse-tether-right', true)).toBe(false)
     expect(warn).toHaveBeenCalledOnce()
     warn.mockRestore()
+  })
+
+  it('treats walk as a transient and restores the prior loop phase on arrival', () => {
+    const scene = createHarness([
+      ['idle-breathe', constantClip('idle-breathe', 0, 2)],
+      ['walk', constantClip('walk', 1, 1.2)]
+    ])
+
+    expect(scene.switchMotion('idle-breathe', true, 'ambient')).toBe(true)
+    scene.mixer.update(0.25)
+    expect(scene.beginRoamMotion('walk', 1)).toBe(true)
+    expect(scene.currentMotionName).toBe('walk')
+    expect(scene.roamLeanTarget).toBeLessThan(0)
+
+    scene.advanceMotionBlend(0.5)
+    scene.mixer.update(0.5)
+    scene.endRoamMotion()
+
+    expect(scene.currentMotionName).toBe('idle-breathe')
+    expect(scene.currentMotionLoop).toBe(true)
+    expect(scene.currentAction?.time).toBeCloseTo(0.25, 5)
+    expect(scene.roamLeanTarget).toBe(0)
+    expect([...scene.actionWeights.values()].reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 8)
+  })
+
+  it('holds a conversational motion until walking ends, then resumes the pre-walk idle', () => {
+    const scene = createHarness([
+      ['idle-breathe', constantClip('idle-breathe', 0, 2)],
+      ['walk', constantClip('walk', 1, 1.2)],
+      ['wave-right', constantClip('wave-right', 2, 0.5)]
+    ])
+
+    expect(scene.switchMotion('idle-breathe', true, 'ambient')).toBe(true)
+    scene.mixer.update(0.1)
+    expect(scene.beginRoamMotion('walk', -1)).toBe(true)
+    expect(scene.playMotion('wave-right', false)).toBe(true)
+    expect(scene.currentMotionName).toBe('walk')
+
+    scene.endRoamMotion()
+    expect(scene.currentMotionName).toBe('wave-right')
+    expect(scene.resumeMotion?.name).toBe('idle-breathe')
+
+    scene.advanceMotionBlend(0.6)
+    scene.mixer.update(0.6)
+    expect(scene.currentMotionName).toBe('idle-breathe')
+  })
+
+  it('drops a stale model-load rejection instead of reporting failure for the latest model', async () => {
+    const scene = createHarness([])
+    let rejectLoad!: (error: Error) => void
+    const pending = new Promise<never>((_resolve, reject) => {
+      rejectLoad = reject
+    })
+    const load = vi.spyOn(GLTFLoader.prototype, 'loadAsync').mockReturnValue(pending)
+
+    const stale = scene.loadVRM('stale.vrm')
+    scene.modelLoadGeneration += 1
+    rejectLoad(new Error('late network failure'))
+
+    await expect(stale).resolves.toBeNull()
+    load.mockRestore()
   })
 })

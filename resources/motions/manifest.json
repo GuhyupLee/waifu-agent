@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "format": "VRMC_vrm_animation 1.0 in GLB 2.0",
   "generator": "scripts/generate-vrma-library.mjs",
-  "count": 54,
+  "count": 55,
   "fps": 30,
   "humanoidBoneCount": 51,
   "provenance": {
@@ -599,6 +599,20 @@
       "description": "양팔을 높이 들고 몸 전체로 기뻐한다.",
       "bytes": 99540,
       "sha256": "fd220333cb205614b042c1d731e83b42ea1b1715e20d8ddab71abbe91ecfe282"
+    },
+    {
+      "name": "walk",
+      "title": "자연스러운 제자리 걷기",
+      "filename": "walk.vrma",
+      "category": "locomotion",
+      "duration": 1.2,
+      "frameCount": 37,
+      "fps": 30,
+      "loop": true,
+      "recommendedExpression": "neutral",
+      "description": "창 이동이 전진을 맡고, 두 발의 접지와 팔·골반의 역위상이 0.6초마다 맞물린다.",
+      "bytes": 48600,
+      "sha256": "0be1b779aa7c8edc964b68a99ce136fc0410a89a45a3bad8bfda56a32dbb63cf"
     },
     {
       "name": "happy-bounce",

@@ -10,6 +10,7 @@ import { assetUrl, handleAssetProtocol, registerAssetScheme } from './assetProto
 import { loadConfig, saveConfig } from './config/store'
 import { Waifu } from './waifu'
 import { checkStt, transcribe } from './voice/stt'
+import { pingEngine } from './voice/tts'
 import { DiscordBot } from './discord/bot'
 import type { PermissionDecision } from '@shared/protocol'
 
@@ -38,6 +39,9 @@ function registerIpc(): void {
         break
 
       case 'drag-start':
+        // 자동 이동 timer와 사용자의 drag-move가 동시에 setBounds를 쓰면 창이 매 프레임
+        // 원래 경로로 튄다. 손으로 잡는 순간부터는 사용자가 유일한 이동 주체다.
+        waifu?.setAvatarDragging(true)
         dragging = true
         setAvatarInteractive(win, true)
         break
@@ -49,6 +53,7 @@ function registerIpc(): void {
       }
 
       case 'drag-end':
+        waifu?.setAvatarDragging(false)
         dragging = false
         break
 
@@ -68,6 +73,7 @@ function registerIpc(): void {
               `[avatar] 표정 프리셋: ${event.presets.join(', ') || '(없음)'}\n`
           )
           sendMotions(win)
+          sendTuning(loadConfig())
         } else {
           process.stderr.write(`[avatar] 모델 로드 실패: ${event.error}\n`)
         }
@@ -109,6 +115,13 @@ function registerIpc(): void {
     if (patch.avatar?.modelPath !== undefined && avatarWindow && !avatarWindow.isDestroyed()) {
       sendModel(avatarWindow, next)
     }
+    // 조절값은 바로 반영한다. 슬라이더를 움직이며 맞추려면 즉시 보여야 한다.
+    if (patch.avatar || patch.chat) sendTuning(next)
+    if (patch.avatar?.alwaysOnTop !== undefined && avatarWindow && !avatarWindow.isDestroyed()) {
+      // 생성자 옵션만으로는 레벨이 floating 이라 작업표시줄 뒤로 간다.
+      if (next.avatar.alwaysOnTop) avatarWindow.setAlwaysOnTop(true, 'screen-saver')
+      else avatarWindow.setAlwaysOnTop(false)
+    }
     return next
   })
 
@@ -126,6 +139,39 @@ function registerIpc(): void {
   ipcMain.handle(IPC.changesUndo, (_e, id: string) =>
     waifu?.restoreSnapshot(id) ?? { ok: false, reason: '아직 준비되지 않았다' }
   )
+
+  ipcMain.handle(IPC.memoryList, () =>
+    (waifu?.listMemories() ?? []).map((m) => ({
+      key: m.key,
+      value: m.value,
+      updatedAt: m.updatedAt
+    }))
+  )
+  ipcMain.handle(IPC.memoryForget, (_e, key: string) => waifu?.forgetMemory(key) ?? false)
+
+  ipcMain.handle(IPC.routineList, () =>
+    (waifu?.listRoutines() ?? []).map((r) => ({
+      name: r.name,
+      summary: r.summary,
+      runCount: r.runCount,
+      lastRunAt: r.lastRunAt
+    }))
+  )
+  ipcMain.handle(IPC.routineRemove, (_e, name: string) => waifu?.removeRoutine(name) ?? false)
+
+  ipcMain.handle(IPC.reminderList, () =>
+    (waifu?.listReminders() ?? []).map((r) => ({
+      id: r.id,
+      text: r.text,
+      dueAt: r.dueAt,
+      repeat: r.repeat,
+      channel: r.channel
+    }))
+  )
+  ipcMain.handle(IPC.reminderCancel, (_e, id: string) => waifu?.cancelReminder(id) ?? false)
+
+  ipcMain.handle(IPC.diagnostics, () => waifu?.diagnostics() ?? null)
+  ipcMain.handle(IPC.pingVoice, (_e, url: string) => pingEngine(url))
 
   ipcMain.handle(IPC.pickModel, async () => {
     const res = await dialog.showOpenDialog({
@@ -271,6 +317,21 @@ function startGazeTracking(): NodeJS.Timeout {
   }, 33)
 }
 
+/** 재시작 없이 반영 가능한 설정값을 아바타에 흘려보낸다. */
+function sendTuning(config: WaifuConfig): void {
+  const win = avatarWindow
+  if (!win || win.isDestroyed()) return
+  win.webContents.send(IPC.avatarCommand, {
+    type: 'tuning',
+    hitAlpha: config.avatar.hitAlpha,
+    swayStrength: config.avatar.swayStrength,
+    ambientMotion: config.avatar.ambientMotion,
+    showSubtitle: config.chat.showSubtitle,
+    subtitleMinMs: config.chat.subtitleMinMs,
+    scale: config.avatar.scale
+  })
+}
+
 /** resources/motions 의 .vrma 를 전부 등록한다. 파일 이름이 곧 모션 이름이 된다. */
 function sendMotions(win: BrowserWindow): void {
   const dir = resolve(app.getAppPath(), 'resources/motions')
@@ -348,6 +409,13 @@ void app.whenReady().then(async () => {
   handleAssetProtocol()
   verifyChildEntries()
   registerIpc()
+
+  // topology가 바뀌면 예전 display 좌표는 더 이상 안전한 목적지가 아니다.
+  // 먼저 roam을 끊고 avatarWindow의 기존 listener가 새 작업 영역에 다시 배치하게 둔다.
+  const cancelRoamingForDisplayChange = (): void => waifu?.cancelRoaming()
+  screen.on('display-metrics-changed', cancelRoamingForDisplayChange)
+  screen.on('display-added', cancelRoamingForDisplayChange)
+  screen.on('display-removed', cancelRoamingForDisplayChange)
 
   const config = loadConfig()
   process.stdout.write(`[config] 퍼소나=${config.persona.name} 권한=${config.permission.mode}\n`)

@@ -40,6 +40,9 @@ const DRAG_MOTION = 'mouse-tether-right'
 /** 손을 놓은 뒤 앵커 보정을 원점으로 되돌리는 짧은 완충 시간. */
 const DRAG_RELEASE_SECONDS = 0.32
 const DRAG_OFFSET_STIFFNESS = 14
+/** 진행 방향으로 아주 조금만 기울인다. 큰 값은 걷기보다 넘어지는 것처럼 보인다. */
+const ROAM_LEAN = THREE.MathUtils.degToRad(4)
+const ROAM_LEAN_STIFFNESS = 8
 
 export interface LoadResult {
   hasExpressions: boolean
@@ -65,12 +68,13 @@ interface MotionBlendState {
   duration: number
 }
 
-type MotionStartReason = 'request' | 'ambient' | 'interactive' | 'restore'
+type MotionStartReason = 'request' | 'ambient' | 'interactive' | 'restore' | 'roam'
 
 export class VrmScene {
   readonly scene = new THREE.Scene()
   readonly camera: THREE.PerspectiveCamera
   private readonly renderer: THREE.WebGLRenderer
+  private rendererPixelRatio = 1
   private readonly clock = new THREE.Clock()
 
   private vrm: VRM | null = null
@@ -100,6 +104,14 @@ export class VrmScene {
   private readonly actionWeights = new Map<THREE.AnimationAction, number>()
   private motionBlend: MotionBlendState | null = null
   private readonly clips = new Map<string, THREE.AnimationClip>()
+
+  /** 로밍은 일반 지속 모션과 달리 끝나면 반드시 출발 전 상태로 돌아가는 transient다. */
+  private roaming = false
+  private roamMotionActive = false
+  private roamRestoreMotion: MotionSnapshot | null = null
+  private roamPendingMotion: PendingMotionRequest | null = null
+  private roamLean = 0
+  private roamLeanTarget = 0
 
   /**
    * 커서와 손을 화면 좌표에서 붙이는 드래그 앵커.
@@ -139,6 +151,10 @@ export class VrmScene {
 
   private pointer: { x: number; y: number } | null = null
   private readonly pixel = new Uint8Array(4)
+  /** 클릭 판정 알파 임계값. 설정에서 조절한다. */
+  private hitAlpha = 8
+  /** 유휴 시 자율 행동을 켤지. 설정에서 조절한다. */
+  private ambientEnabled = true
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -152,7 +168,8 @@ export class VrmScene {
       premultipliedAlpha: false
     })
     this.renderer.setClearAlpha(0)
-    this.renderer.setPixelRatio(window.devicePixelRatio)
+    this.rendererPixelRatio = window.devicePixelRatio
+    this.renderer.setPixelRatio(this.rendererPixelRatio)
     // 배경에 Color/Texture 를 넣는 순간 창이 불투명해진다. null 을 유지한다.
     this.scene.background = null
 
@@ -177,7 +194,11 @@ export class VrmScene {
     const loader = new GLTFLoader()
     loader.register((parser) => new VRMLoaderPlugin(parser))
 
-    const gltf = await loader.loadAsync(url)
+    const gltf = await loader.loadAsync(url).catch((error: unknown) => {
+      if (generation !== this.modelLoadGeneration) return null
+      throw error
+    })
+    if (!gltf) return null
     // 평범한 .glb 나 손상된 .vrm 도 promise 는 성공으로 끝난다. userData.vrm 이 없을 뿐이다.
     const vrm = gltf.userData.vrm as VRM | undefined
     if (generation !== this.modelLoadGeneration) {
@@ -257,7 +278,11 @@ export class VrmScene {
 
     const loader = new GLTFLoader()
     loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
-    const gltf = await loader.loadAsync(url)
+    const gltf = await loader.loadAsync(url).catch((error: unknown) => {
+      if (generation !== this.modelLoadGeneration || this.vrm !== vrm) return null
+      throw error
+    })
+    if (!gltf) return
 
     // 구 모델 기준 normalized track을 새 mixer에 넣으면 target 없는 action이 idle까지 막는다.
     if (generation !== this.modelLoadGeneration || this.vrm !== vrm) return
@@ -291,6 +316,13 @@ export class VrmScene {
       console.warn(`[avatar] '${name}'은 이음새 없는 반복용 모션이 아니므로 한 번만 재생한다.`)
     }
 
+    // 걷는 도중 받은 표정 동작을 바로 재생하면 발은 멈췄는데 창만 미끄러진다.
+    // 마지막 요청 하나를 도착 직후 재생하고, 단발이면 출발 전 loop로 돌아가게 한다.
+    if (this.roaming) {
+      this.roamPendingMotion = { name, loop }
+      return true
+    }
+
     // 대화 중 새 모션이 와도 손을 놓기 전까지는 tether 를 끊지 않는다. 마지막 요청을 복귀 대상으로 둔다.
     if (this.dragGrip && name !== DRAG_MOTION) {
       this.queueMotionAfterDrag(name, loop)
@@ -298,6 +330,64 @@ export class VrmScene {
     }
 
     return this.switchMotion(name, loop, 'request')
+  }
+
+  /** 출발 전 loop를 보존한 채 로밍 전용 모션과 방향 기울임을 시작한다. */
+  beginRoamMotion(name: string | null, direction: -1 | 0 | 1): boolean {
+    this.roamLeanTarget = -direction * ROAM_LEAN
+
+    if (!this.roaming) {
+      this.roamRestoreMotion =
+        this.currentMotionLoop && this.currentMotionRole !== 'interactive'
+          ? this.currentSnapshot()
+          : this.resumeMotion
+      this.roamPendingMotion = null
+      this.roamMotionActive = false
+    }
+    this.roaming = true
+
+    if (!name || !this.clips.has(name) || !effectiveMotionLoop(name, true)) return false
+    if (this.currentMotionName === name && this.currentMotionLoop) {
+      this.roamMotionActive = true
+      return true
+    }
+    const started = this.switchMotion(name, true, 'roam')
+    if (started) this.roamMotionActive = true
+    return started
+  }
+
+  /** 도착·취소 모두 같은 경로로 정리해 walk만 내리고 이전 상태로 crossfade한다. */
+  endRoamMotion(): void {
+    this.roamLeanTarget = 0
+    if (!this.roaming) return
+
+    const ownedMotion = this.roamMotionActive
+    const restore = this.roamRestoreMotion
+    const pending = this.roamPendingMotion
+    this.roaming = false
+    this.roamMotionActive = false
+    this.roamRestoreMotion = null
+    this.roamPendingMotion = null
+
+    // 로밍 모션을 못 찾았으면 현재 action은 건드리지 않는다. lean만 원위치로 감쇠한다.
+    if (!ownedMotion) return
+
+    // 사용자가 이동 중 잡았다면 tether가 손을 놓을 때 복귀/보류 동작을 처리하게 한다.
+    if (this.dragGrip || this.dragReleaseRemaining > 0) {
+      this.dragRestoreMotion = restore
+      if (pending) this.queueMotionAfterDrag(pending.name, pending.loop)
+      return
+    }
+
+    if (pending && this.clips.has(pending.name)) {
+      this.resumeMotion = pending.loop ? null : restore
+      if (this.switchMotion(pending.name, pending.loop, 'restore')) return
+    }
+
+    this.resumeMotion = null
+    if (restore && this.clips.has(restore.name)) {
+      this.switchMotion(restore.name, restore.loop, 'restore', restore.time)
+    } else this.startAmbient(true)
   }
 
   stopMotion(): void {
@@ -316,6 +406,11 @@ export class VrmScene {
     this.cursorLookElapsed = 0
     this.cursorLookDuration = 0
     this.pendingMotionRequest = null
+    this.roaming = false
+    this.roamMotionActive = false
+    this.roamRestoreMotion = null
+    this.roamPendingMotion = null
+    this.roamLeanTarget = 0
     if (this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
   }
 
@@ -367,7 +462,12 @@ export class VrmScene {
     }
 
     const next = mixer.clipAction(clip)
-    if (previous === next && loop && this.currentMotionLoop && reason === 'request') return true
+    if (
+      previous === next &&
+      loop &&
+      this.currentMotionLoop &&
+      (reason === 'request' || reason === 'roam')
+    ) return true
     if (previous === next && !loop && !this.currentMotionLoop && reason === 'request') return true
 
     const blendSeconds = transitionSeconds(previousRole, nextRole)
@@ -641,6 +741,11 @@ export class VrmScene {
     const w = this.canvas.clientWidth
     const h = this.canvas.clientHeight
     if (w === 0 || h === 0) return
+    const nextPixelRatio = window.devicePixelRatio
+    if (Math.abs(nextPixelRatio - this.rendererPixelRatio) > 1e-6) {
+      this.rendererPixelRatio = nextPixelRatio
+      this.renderer.setPixelRatio(nextPixelRatio)
+    }
     this.renderer.setSize(w, h, false)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
@@ -655,6 +760,10 @@ export class VrmScene {
   }
 
   render(): { pointerOverAvatar: boolean } {
+    // Chromium이 mixed-DPI 경계를 넘을 때 항상 resize를 보내는 것은 아니다.
+    // backing buffer만 이전 배율에 남으면 모델이 흐려지므로 프레임 시작에 값만 비교한다.
+    if (Math.abs(window.devicePixelRatio - this.rendererPixelRatio) > 1e-6) this.resize()
+
     const delta = this.clock.getDelta()
     this.elapsed += delta
 
@@ -668,8 +777,9 @@ export class VrmScene {
 
     this.updateHead(delta)
     this.hang.update(delta)
+    this.roamLean = damp(this.roamLean, this.roamLeanTarget, ROAM_LEAN_STIFFNESS, delta)
     if (this.hanger) {
-      this.hanger.rotation.z = this.hang.swing
+      this.hanger.rotation.z = this.hang.swing + this.roamLean
       this.hanger.position.set(
         this.dragOffset.x,
         this.hangerRestY - this.hang.droop + this.dragOffset.y,
@@ -783,7 +893,29 @@ export class VrmScene {
     gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel)
     // 임계값을 낮게 둬서 안티에일리어싱 가장자리를 포함시킨다. forward:true 상태에서는
     // 클릭이 전달되지 않으므로, 커서가 실루엣에 닿기 전에 전환이 끝나야 첫 클릭을 잃지 않는다.
-    return (this.pixel[3] ?? 0) > 8
+    return (this.pixel[3] ?? 0) > this.hitAlpha
+  }
+
+  /**
+   * 설정 화면에서 조절한 값을 반영한다.
+   *
+   * 재시작을 요구하면 슬라이더를 움직이며 맞출 수가 없다. 여기 오는 것들은
+   * 전부 다음 프레임부터 바로 적용된다.
+   */
+  applyTuning(t: {
+    hitAlpha: number
+    swayStrength: number
+    ambientMotion: boolean
+    scale: number
+  }): void {
+    this.hitAlpha = t.hitAlpha
+    this.hang.strength = t.swayStrength
+    this.ambientEnabled = t.ambientMotion
+    if (this.hanger && Math.abs(this.hanger.scale.x - t.scale) > 0.001) {
+      this.hanger.scale.setScalar(t.scale)
+      // 크기가 바뀌면 프레이밍도 다시 잡아야 잘리거나 남는 여백이 생기지 않는다.
+      this.fitCamera()
+    }
   }
 
   /**
@@ -864,6 +996,12 @@ export class VrmScene {
     this.dragReleaseRemaining = 0
     this.dragRestoreMotion = null
     this.refitAfterDrag = false
+    this.roaming = false
+    this.roamMotionActive = false
+    this.roamRestoreMotion = null
+    this.roamPendingMotion = null
+    this.roamLean = 0
+    this.roamLeanTarget = 0
     this.clips.clear()
   }
 

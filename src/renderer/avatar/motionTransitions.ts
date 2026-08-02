@@ -33,6 +33,7 @@ const LOOPABLE_MOTIONS = new Set([
   'idle-curious',
   'explain-calm',
   'explain-energetic',
+  'walk',
   'happy-bounce',
   'dance-sway',
   'dance-bounce',

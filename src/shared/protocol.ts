@@ -100,6 +100,21 @@ export type AvatarCommand =
   | { type: 'stop-speaking' }
   | { type: 'set-scale'; scale: number }
   /**
+   * 렌더러가 반영해야 하는 설정값들.
+   *
+   * 설정 화면에서 바꾼 값이 앱을 다시 켜야만 적용되면 조절해보면서 맞출 수가 없다.
+   * 재시작 없이 반영 가능한 것들은 여기로 흘려보낸다.
+   */
+  | {
+      type: 'tuning'
+      hitAlpha: number
+      swayStrength: number
+      ambientMotion: boolean
+      showSubtitle: boolean
+      subtitleMinMs: number
+      scale: number
+    }
+  /**
    * 푸시투토크 녹음 토글.
    *
    * Electron 의 globalShortcut 은 키를 뗀 시점을 알려주지 않으므로 "누르고 있는 동안"이
@@ -242,6 +257,24 @@ export interface WaifuConfig {
     /** 화면상 위치 (0..1 정규화, 좌하단 기준). */
     anchor: { x: number; y: number }
     alwaysOnTop: boolean
+    /**
+     * 클릭 판정 알파 임계값 (0..255). 낮을수록 실루엣 가장자리까지 잡는다.
+     * forward:true 상태에서는 클릭이 전달되지 않으므로, 커서가 몸에 닿기 전에
+     * 전환이 끝나야 첫 클릭을 잃지 않는다.
+     */
+    hitAlpha: number
+    /** 잡아 끌 때 흔들리는 정도. 0 이면 흔들리지 않는다. */
+    swayStrength: number
+    /** 유휴 시 스스로 둘러보거나 기지개를 켜는 행동. */
+    ambientMotion: boolean
+  }
+  chat: {
+    /** 자막이 화면에 머무는 최소 시간(ms). 긴 말은 글자 수에 비례해 늘어난다. */
+    subtitleMinMs: number
+    /** 자막을 아예 띄우지 않는다. 음성만 쓸 때. */
+    showSubtitle: boolean
+    /** 패널에 툴 실행과 활동 로그를 보여준다. 끄면 대화만 남는다. */
+    showActivity: boolean
   }
   voice: {
     enabled: boolean
@@ -321,7 +354,15 @@ export const DEFAULT_CONFIG: WaifuConfig = {
     modelPath: null,
     scale: 1,
     anchor: { x: 0.85, y: 0 },
-    alwaysOnTop: true
+    alwaysOnTop: true,
+    hitAlpha: 8,
+    swayStrength: 1,
+    ambientMotion: true
+  },
+  chat: {
+    subtitleMinMs: 2500,
+    showSubtitle: true,
+    showActivity: true
   },
   voice: {
     enabled: false,
@@ -369,7 +410,11 @@ export const WAIFU_TOOLS = [
   'reminder_cancel',
   /** "이거 봐줘" — 사용자가 보여주는 화면이나 클립보드를 본다. */
   'look_at_screen',
-  'read_clipboard'
+  'read_clipboard',
+  /** 자주 하는 일을 이름 붙여 저장하고 다시 꺼낸다. */
+  'routine_save',
+  'routine_list',
+  'routine_recall'
 ] as const
 
 export type WaifuToolName = (typeof WAIFU_TOOLS)[number]
@@ -421,6 +466,48 @@ export interface WaifuApi {
   /** 에이전트가 바꾼 파일 목록과 되돌리기. */
   listChanges(): Promise<FileChange[]>
   undoChange(id: string): Promise<{ ok: boolean; reason?: string }>
+
+  /** 저장된 것들을 보고 지운다. */
+  listMemories(): Promise<StoredMemory[]>
+  forgetMemory(key: string): Promise<boolean>
+  listRoutines(): Promise<StoredRoutine[]>
+  removeRoutine(name: string): Promise<boolean>
+  listReminders(): Promise<StoredReminder[]>
+  cancelReminder(id: string): Promise<boolean>
+
+  diagnostics(): Promise<Diagnostics>
+  /** TTS 엔진 버전. 안 떠 있으면 null. */
+  pingVoice(url: string): Promise<string | null>
+}
+
+export interface StoredMemory {
+  key: string
+  value: string
+  updatedAt: number
+}
+
+export interface StoredRoutine {
+  name: string
+  summary: string
+  runCount: number
+  lastRunAt: number | null
+}
+
+export interface StoredReminder {
+  id: string
+  text: string
+  dueAt: number
+  repeat: string
+  channel: string
+}
+
+export interface Diagnostics {
+  backend: BackendKind
+  sessionId: string | null
+  busy: boolean
+  motions: number
+  activeTasks: number
+  memories: number
 }
 
 /** 되돌리기 UI 가 보여줄 한 건. */
@@ -456,5 +543,16 @@ export const IPC = {
   pickModel: 'avatar:pick-model',
   /** panel -> main (invoke), 파일 변경 이력과 되돌리기 */
   changesList: 'safety:list',
-  changesUndo: 'safety:undo'
+  changesUndo: 'safety:undo',
+  /** panel -> main (invoke), 저장된 것들 조회·삭제 */
+  memoryList: 'store:memories',
+  memoryForget: 'store:memory-forget',
+  routineList: 'store:routines',
+  routineRemove: 'store:routine-remove',
+  reminderList: 'store:reminders',
+  reminderCancel: 'store:reminder-cancel',
+  /** panel -> main (invoke), 현재 상태 진단 */
+  diagnostics: 'app:diagnostics',
+  /** panel -> main (invoke), TTS 엔진이 살아 있는지 */
+  pingVoice: 'voice:ping'
 } as const

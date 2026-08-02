@@ -54,10 +54,17 @@ describe('restingSpot', () => {
     expect(spot.x).toBe(-1920 + 1920 - 420 - 24)
   })
 
-  it('창이 작업 영역보다 크면 좌표가 밖으로 나간다 (인지하는 한계)', () => {
-    // 이런 화면에서는 애초에 아바타가 다 안 들어간다. 여기서 억지로 가두면
-    // 오히려 잘린 채로 붙어 있게 된다.
+  it('창이 작업 영역보다 커도 왼쪽 위 모서리는 화면 안에 남긴다', () => {
+    // 아바타가 다 들어가지 않는 작은 화면이라도, 좌표가 음수로 나가면
+    // 창이 통째로 화면 밖에 놓여 사용자가 찾을 수 없게 된다.
     const spot = restingSpot(display(0, 0, 300, 300), { width: 420, height: 640 }, 24)
-    expect(spot.x).toBeLessThan(0)
+    expect(spot.x).toBe(24)
+    expect(spot.y).toBe(24)
+  })
+
+  it('원점이 음수인 화면에서도 여백 기준으로 클램프한다', () => {
+    const spot = restingSpot(display(-1920, -200, 300, 300), { width: 420, height: 640 }, 24)
+    expect(spot.x).toBe(-1920 + 24)
+    expect(spot.y).toBe(-200 + 24)
   })
 })

@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { BackendEvent, PanelEvent, PermissionRequest, WaifuApi } from '@shared/protocol'
-import { Settings } from './Settings'
+import { Settings } from './settings/Settings'
 
 declare global {
   interface Window {
@@ -24,6 +24,15 @@ function Panel(): React.JSX.Element {
   /** 승인 대기 중인 요청. 훅이 응답을 기다리며 툴 실행을 붙잡고 있다. */
   const [permission, setPermission] = useState<PermissionRequest | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  /**
+   * 작업 기록을 대화에 섞을지. 설정에서 끄면 대화만 남는다.
+   * ref 가 아니라 state 로 두면 이벤트 핸들러가 옛 값을 붙잡는다 — 구독은 한 번만 걸린다.
+   */
+  const showActivity = useRef(true)
+
+  useEffect(() => {
+    void window.waifu.getConfig().then((c) => (showActivity.current = c.chat.showActivity))
+  }, [showSettings])
   /** 스트리밍 중인 응답은 마지막 줄에 계속 이어 붙인다. */
   const streaming = useRef(false)
 
@@ -59,10 +68,14 @@ function Panel(): React.JSX.Element {
           })
           break
         case 'activity':
-          setLines((ls) => [...ls, { id: nextId++, who: 'system', text: `… ${e.detail}` }])
+          if (showActivity.current) {
+            setLines((ls) => [...ls, { id: nextId++, who: 'system', text: `… ${e.detail}` }])
+          }
           break
         case 'tool-start':
-          setLines((ls) => [...ls, { id: nextId++, who: 'system', text: `⚙ ${e.name}` }])
+          if (showActivity.current) {
+            setLines((ls) => [...ls, { id: nextId++, who: 'system', text: `⚙ ${e.name}` }])
+          }
           break
         case 'error':
           setLines((ls) => [...ls, { id: nextId++, who: 'system', text: `⚠ ${e.message}` }])

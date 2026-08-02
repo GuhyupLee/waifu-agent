@@ -23,6 +23,12 @@ const BOB_STIFFNESS = 90
 const BOB_DAMPING = 9
 
 export class HangPhysics {
+  /**
+   * 흔들림 세기 배수. 0 이면 흔들리지 않고 창만 따라온다.
+   * 사람마다 자연스럽다고 느끼는 정도가 달라 설정에서 조절한다.
+   */
+  strength = 1
+
   /** 좌우 스윙 각(라디안). */
   private angle = 0
   private angVel = 0
@@ -35,12 +41,14 @@ export class HangPhysics {
   private vy = 0
   private grabbed = false
 
+  // 물리는 그대로 돌리고 출력에만 배수를 건다. 적분에 배수를 곱하면
+  // strength 를 바꿀 때마다 진동 주기까지 달라져서 조절이 어려워진다.
   get swing(): number {
-    return this.angle
+    return this.angle * this.strength
   }
 
   get droop(): number {
-    return this.bob
+    return this.bob * this.strength
   }
 
   /** 잡히는 순간 살짝 튀어오르게 해서 "들렸다"는 느낌을 준다. */

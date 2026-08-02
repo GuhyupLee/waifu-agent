@@ -198,6 +198,48 @@ async function callForImage(
 }
 
 server.registerTool(
+  'routine_save',
+  {
+    title: '루틴으로 저장',
+    description:
+      '방금 한 작업을 다음에도 같은 방식으로 할 수 있게 저장한다. 작업이 끝난 뒤 ' +
+      '"이거 다음에도 같은 방식으로 할까?" 하고 물어서 사용자가 그러자고 하면 저장해라. ' +
+      '먼저 묻지 않고 저장하지 마라. ' +
+      '`steps` 에는 명령 스크립트가 아니라 **실제로 통했던 절차**를 자연어로 적어라 — ' +
+      '다음에 상황이 조금 달라도 그걸 보고 맞춰 갈 수 있어야 한다. ' +
+      '같은 이름으로 다시 저장하면 덮어쓴다.',
+    inputSchema: {
+      name: z.string().describe('사용자가 부를 이름. "영수증 정리" 처럼 짧게.'),
+      summary: z.string().describe('무엇을 하는지 한 줄 설명.'),
+      steps: z.string().describe('다음에 실행할 때 따라갈 절차.')
+    }
+  },
+  async (args) => call('routine_save', args as Record<string, unknown>)
+)
+
+server.registerTool(
+  'routine_list',
+  {
+    title: '루틴 목록',
+    description: '저장된 루틴들을 본다. 사용자가 "뭐 할 수 있어?" 라고 물을 때 쓴다.',
+    inputSchema: {}
+  },
+  async () => call('routine_list', {})
+)
+
+server.registerTool(
+  'routine_recall',
+  {
+    title: '루틴 꺼내기',
+    description:
+      '저장된 루틴의 절차를 읽어온다. 사용자가 루틴 이름을 부르면 이걸로 절차를 받아 ' +
+      '그대로 따라가되, 지금 상황에 맞게 판단해라. 절차가 안 맞으면 그렇다고 말해라.',
+    inputSchema: { name: z.string() }
+  },
+  async (args) => call('routine_recall', args as Record<string, unknown>)
+)
+
+server.registerTool(
   'look_at_screen',
   {
     title: '화면 보기',

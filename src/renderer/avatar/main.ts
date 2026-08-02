@@ -20,21 +20,27 @@ const speech = new SpeechPlayer()
 const recorder = new Recorder()
 const waifu = window.waifu
 
+/** 설정 화면에서 조절하는 값들. main 이 tuning 명령으로 갱신한다. */
+const tuning = {
+  showSubtitle: true,
+  subtitleMinMs: 2500
+}
+
 /** 자막을 띄운다. 글자 수에 비례해 머무는 시간을 늘린다 — 긴 말이 순식간에 사라지면 못 읽는다. */
 let subtitleTimer: number | undefined
 function showSubtitle(text: string): void {
-  if (!subtitleEl) return
+  if (!subtitleEl || !tuning.showSubtitle) return
   subtitleEl.textContent = text
   subtitleEl.classList.add('on')
   window.clearTimeout(subtitleTimer)
   subtitleTimer = window.setTimeout(
     () => subtitleEl.classList.remove('on'),
-    Math.max(2500, text.length * 110)
+    Math.max(tuning.subtitleMinMs, text.length * 110)
   )
 }
 
 /** 화면을 가로질러 갈 때 재생할 모션. 앞에 있는 것부터 찾아 쓴다. */
-const ROAM_MOTIONS = ['walk', 'happy-bounce', 'dance-bounce', 'jump']
+const ROAM_MOTIONS = ['walk', 'happy-bounce', 'dance-bounce']
 
 const STATUS_COLOR: Record<string, string> = {
   idle: '',
@@ -216,18 +222,28 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
       }
       break
 
+    case 'tuning':
+      tuning.showSubtitle = cmd.showSubtitle
+      tuning.subtitleMinMs = cmd.subtitleMinMs
+      if (!cmd.showSubtitle) subtitleEl?.classList.remove('on')
+      scene.applyTuning({
+        hitAlpha: cmd.hitAlpha,
+        swayStrength: cmd.swayStrength,
+        ambientMotion: cmd.ambientMotion,
+        scale: cmd.scale
+      })
+      break
+
     case 'wake':
       scene.wake()
       break
 
     case 'roam':
       if (cmd.moving) {
-        // 아직 walk 모션이 없다. 있으면 그걸 쓰고, 없으면 이동감이 있는 것으로 대체한다.
-        // 라이브러리에 walk 가 추가되면 코드를 안 고쳐도 자동으로 그쪽을 쓴다.
         const motion = ROAM_MOTIONS.find((m) => scene.motionNames.includes(m))
-        if (motion) scene.playMotion(motion, true)
+        scene.beginRoamMotion(motion ?? null, cmd.direction)
       } else {
-        scene.stopMotion()
+        scene.endRoamMotion()
       }
       break
 

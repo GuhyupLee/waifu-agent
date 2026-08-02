@@ -32,6 +32,7 @@ import {
 } from './roaming'
 import type { RoamHandle } from './roaming'
 import { ReminderStore, resolveReminderTime } from './reminders/store'
+import { RoutineStore } from './routines/store'
 import { isQuiet, quietEndsAt } from './reminders/quietHours'
 import { captureScreen, readClipboardImage, readClipboardText } from './capture'
 import type { PermissionMode } from '@shared/protocol'
@@ -70,7 +71,9 @@ export class Waifu {
   private readonly snapshots = new SnapshotStore()
   /** 진행 중인 이동. 새 이동이 들어오면 취소한다 — 겹치면 창이 떨린다. */
   private roaming: RoamHandle | null = null
+  private avatarDragging = false
   private readonly reminders = new ReminderStore()
+  private readonly routines = new RoutineStore()
   private reminderTimer: NodeJS.Timeout | null = null
   /** 지금 턴이 속한 작업. 에이전트의 task_* 툴은 이걸 대상으로 한다. */
   private current: Task | null = null
@@ -289,6 +292,7 @@ export class Waifu {
   }
 
   async stop(): Promise<void> {
+    this.cancelRoaming()
     await this.backend.stop()
     await this.control.stop()
     if (this.reminderTimer) clearInterval(this.reminderTimer)
@@ -296,6 +300,65 @@ export class Waifu {
     this.tasks.close()
     this.snapshots.close()
     this.reminders.close()
+    this.routines.close()
+  }
+
+  // ─────────────────────── 설정 화면용 조회·삭제 ───────────────────────
+
+  listMemories(): ReturnType<MemoryStore['recall']> {
+    return this.memory.recall('')
+  }
+
+  forgetMemory(key: string): boolean {
+    return this.memory.forget(key)
+  }
+
+  listRoutines(): ReturnType<RoutineStore['list']> {
+    return this.routines.list()
+  }
+
+  removeRoutine(name: string): boolean {
+    return this.routines.remove(name)
+  }
+
+  listReminders(): ReturnType<ReminderStore['upcoming']> {
+    return this.reminders.upcoming()
+  }
+
+  cancelReminder(id: string): boolean {
+    return this.reminders.cancel(id)
+  }
+
+  /** 진단용. 설정 화면에서 지금 상태를 보여준다. */
+  diagnostics(): {
+    backend: BackendKind
+    sessionId: string | null
+    busy: boolean
+    motions: number
+    activeTasks: number
+    memories: number
+  } {
+    return {
+      backend: this.active,
+      sessionId: this.backend.sessionId,
+      busy: this.backend.busy,
+      motions: this.motions.length,
+      activeTasks: this.tasks.active().length,
+      memories: this.memory.count()
+    }
+  }
+
+  /**
+   * 사용자가 아바타를 잡거나 디스플레이 구성이 바뀌면 자동 이동을 즉시 양보한다.
+   * roamTo의 terminal callback이 기존 MCP 요청과 renderer 모션까지 함께 정리한다.
+   */
+  cancelRoaming(): void {
+    this.roaming?.cancel()
+  }
+
+  setAvatarDragging(dragging: boolean): void {
+    this.avatarDragging = dragging
+    if (dragging) this.cancelRoaming()
   }
 
   /** 되돌리기 UI 용. 최근에 바뀐 파일들. */
@@ -334,6 +397,36 @@ export class Waifu {
           ...(typeof args.loop === 'boolean' ? { loop: args.loop } : {})
         })
         return 'ok'
+
+      case 'routine_save': {
+        const r = this.routines.save({
+          name: String(args.name ?? ''),
+          summary: String(args.summary ?? ''),
+          steps: String(args.steps ?? ''),
+          sourceTaskId: this.current?.id ?? null
+        })
+        return `"${r.name}" 루틴으로 저장했다. 다음엔 이름만 부르면 된다.`
+      }
+
+      case 'routine_list': {
+        const list = this.routines.list()
+        if (list.length === 0) return '저장된 루틴이 없다.'
+        return list
+          .map((r) => `- ${r.name}: ${r.summary}${r.runCount > 0 ? ` (${r.runCount}번 실행)` : ''}`)
+          .join('\n')
+      }
+
+      case 'routine_recall': {
+        const r = this.routines.byName(String(args.name ?? ''))
+        if (!r) {
+          const names = this.routines.list().map((x) => x.name)
+          return names.length
+            ? `그런 루틴이 없다. 있는 것: ${names.join(', ')}`
+            : '저장된 루틴이 없다.'
+        }
+        this.routines.markRun(r.id)
+        return `## ${r.name}\n${r.summary}\n\n절차:\n${r.steps}`
+      }
 
       case 'look_at_screen': {
         // 화면 전체가 넘어간다. 자동 승인 목록과 무관하게 항상 물어본다 —
@@ -516,32 +609,68 @@ export class Waifu {
    * 아직 걷고 있으면 말과 그림이 어긋난다.
    */
   private moveAvatar(to: 'left' | 'right' | 'cursor'): Promise<string> {
+    // 최신 명령이 항상 이전 경로를 대체한다. 먼저 handle을 떼어 stale callback이
+    // 새 이동의 모션을 끄지 못하게 한 뒤 이전 Promise를 cancelled로 종결한다.
+    const previous = this.roaming
+    this.roaming = null
+    previous?.cancel()
+
+    if (this.avatarDragging) {
+      if (previous) this.toAvatar({ type: 'roam', moving: false, direction: 0 })
+      return Promise.resolve('아바타를 잡고 있는 동안에는 자동 이동하지 않는다.')
+    }
+
     const win = this.avatar()
     if (!win || win.isDestroyed()) return Promise.resolve('아바타 창이 없다.')
 
     const display = resolveTarget(win, { kind: to } as never)
-    if (!display) return Promise.resolve('갈 수 있는 모니터를 찾지 못했다.')
+    if (!display) {
+      if (previous) this.toAvatar({ type: 'roam', moving: false, direction: 0 })
+      return Promise.resolve('갈 수 있는 모니터를 찾지 못했다.')
+    }
 
     const before = currentDisplayIndex(win)
+    const displays = orderedDisplays()
+    const current = displays[before]
+
+    // waifu_move는 화면 사이 이동이다. 한 화면뿐이거나 이미 대상 화면에 있으면
+    // 사용자가 직접 둔 위치를 멋대로 오른쪽 아래로 재배치하지 않는다.
+    if (displays.length <= 1 || current?.id === display.id) {
+      if (previous) this.toAvatar({ type: 'roam', moving: false, direction: 0 })
+      return Promise.resolve(
+        displays.length <= 1 ? '모니터가 하나뿐이라 이동하지 않았다.' : '이미 그 모니터에 있다.'
+      )
+    }
+
     const bounds = win.getBounds()
     const destination = restingSpot(display, { width: bounds.width, height: bounds.height }, DEFAULT_ROAM.margin)
 
     // 이미 그 자리면 걷는 시늉을 할 이유가 없다.
     if (Math.abs(destination.x - bounds.x) < 2 && Math.abs(destination.y - bounds.y) < 2) {
-      return Promise.resolve(
-        orderedDisplays().length <= 1 ? '모니터가 하나뿐이라 이동하지 않았다.' : '이미 거기 있다.'
-      )
+      if (previous) this.toAvatar({ type: 'roam', moving: false, direction: 0 })
+      return Promise.resolve('이미 거기 있다.')
     }
 
-    // 이전 이동이 남아 있으면 취소한다. 두 이동이 겹치면 창이 떨린다.
-    this.roaming?.cancel()
-
     return new Promise<string>((resolve) => {
-      this.roaming = roamTo(win, destination, {
+      let handle: RoamHandle | null = null
+      handle = roamTo(win, destination, {
         onStart: (direction) => this.toAvatar({ type: 'roam', moving: true, direction }),
-        onDone: () => {
+        onDone: (reason) => {
+          // 더 최신 이동이 이미 handle을 차지했다면 그 모션은 건드리지 않는다.
+          if (this.roaming !== handle) {
+            resolve('더 최근 이동 요청으로 바꿨다.')
+            return
+          }
           this.roaming = null
           this.toAvatar({ type: 'roam', moving: false, direction: 0 })
+          if (reason === 'cancelled') {
+            resolve('이동을 멈췄다.')
+            return
+          }
+          if (reason === 'destroyed') {
+            resolve('아바타 창이 닫혀 이동을 멈췄다.')
+            return
+          }
           const after = currentDisplayIndex(win)
           resolve(
             before === after
@@ -550,6 +679,7 @@ export class Waifu {
           )
         }
       })
+      this.roaming = handle
     })
   }
 

@@ -571,6 +571,42 @@ const MOTIONS = [
     addBone(s, 'spine', deg(-8) * a, 0, 0)
     addBone(s, 'head', deg(-8) * a, 0, 0)
   }, { phase: 0.6, energy: 1.3 })),
+  define('walk', '자연스러운 제자리 걷기', 'locomotion', 1.2, true, 'neutral', '창 이동이 전진을 맡고, 두 발의 접지와 팔·골반의 역위상이 0.6초마다 맞물린다.', withBase((s, u) => {
+    const phase = TAU * u
+    const sin = Math.sin(phase)
+    const cos = Math.cos(phase)
+    const leftSwing = Math.max(0, -sin) ** 2
+    const rightSwing = Math.max(0, sin) ** 2
+    const leftStance = Math.max(0, sin) ** 2
+    const rightStance = Math.max(0, -sin) ** 2
+
+    // 전진 translation은 BrowserWindow가 담당한다. hips에는 보행의 상하·좌우 무게 이동만 둔다.
+    s.hips = [0.018 * sin, REST_HIPS_Y + 0.014 * sin * sin, 0.004 * cos]
+    setBone(s, 'hips', deg(2), deg(-4) * cos, deg(3) * sin)
+    setBone(s, 'spine', deg(4), deg(5) * cos, deg(-2) * sin)
+    setBone(s, 'chest', deg(-1), deg(-3) * cos, deg(-1) * sin)
+    setBone(s, 'neck', deg(-1), deg(-1.5) * cos, deg(0.8) * sin)
+    setBone(s, 'head', deg(-1), deg(-1.5) * cos, deg(-1) * sin)
+
+    setBone(s, 'leftUpperLeg', deg(-1) - deg(22) * cos, 0, deg(-1.5))
+    setBone(s, 'rightUpperLeg', deg(-1) + deg(22) * cos, 0, deg(1.5))
+    setBone(s, 'leftLowerLeg', deg(2.5) + deg(42) * leftSwing + deg(5) * leftStance, 0, 0)
+    setBone(s, 'rightLowerLeg', deg(2.5) + deg(42) * rightSwing + deg(5) * rightStance, 0, 0)
+    setBone(s, 'leftFoot', deg(-2) - deg(9) * cos - deg(14) * leftSwing, 0, 0)
+    setBone(s, 'rightFoot', deg(-2) + deg(9) * cos - deg(14) * rightSwing, 0, 0)
+    setBone(s, 'leftToes', -deg(11) * Math.max(0, -cos) ** 2, 0, 0)
+    setBone(s, 'rightToes', -deg(11) * Math.max(0, cos) ** 2, 0, 0)
+
+    setBone(s, 'leftShoulder', 0, 0, deg(-2))
+    setBone(s, 'rightShoulder', 0, 0, deg(2))
+    setBone(s, 'leftUpperArm', deg(3), deg(14) * cos, deg(-72))
+    setBone(s, 'rightUpperArm', deg(3), deg(14) * cos, deg(72))
+    setBone(s, 'leftLowerArm', deg(-2), deg(-7), deg(-8))
+    setBone(s, 'rightLowerArm', deg(-2), deg(7), deg(8))
+    handShape(s, 'left', 'relaxed')
+    handShape(s, 'right', 'relaxed')
+    s.look = [0, 0, 0]
+  }, { phase: 0, energy: 0 })),
   define('happy-bounce', '통통 튀는 기쁨', 'emotion', 4.2, true, 'happy', '발뒤꿈치와 어깨가 번갈아 통통 튄다.', withBase((s, u) => {
     const b = Math.max(0, Math.sin(TAU * 2 * u)) ** 2
     s.hips[1] += 0.025 * b
