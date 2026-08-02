@@ -69,8 +69,14 @@ export function decideIdleAction(ctx: IdleContext, random: number): IdleAction {
   if (gestures.length === 0) return { kind: 'none' }
 
   // 나머지 확률은 아무것도 하지 않는 데 쓴다. 늘 뭔가 하면 산만하다.
-  if (random > 0.6) return { kind: 'none' }
-  const index = Math.min(gestures.length - 1, Math.floor(random * 2 * gestures.length))
+  const ACT_CHANCE = 0.6
+  if (random > ACT_CHANCE) return { kind: 'none' }
+
+  // 게이트를 통과한 난수는 [0, ACT_CHANCE] 안에만 있다. 그 사실을 무시하고
+  // 원래 범위인 것처럼 쓰면 뒤쪽 몸짓에 확률이 몰린다 — 실제로 마지막 하나가
+  // 25%, 나머지는 각 8% 였다. 살아남은 구간을 다시 [0,1) 로 펴서 고르게 만든다.
+  const unit = Math.min(0.999999, random / ACT_CHANCE)
+  const index = Math.min(gestures.length - 1, Math.floor(unit * gestures.length))
   return { kind: 'gesture', motion: gestures[index]! }
 }
 

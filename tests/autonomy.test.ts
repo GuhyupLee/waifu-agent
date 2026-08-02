@@ -86,6 +86,29 @@ describe('decideIdleAction — 몸짓', () => {
       if (a.kind === 'gesture') expect(ctx().motions).toContain(a.motion)
     }
   })
+
+  it('몸짓이 고르게 뽑힌다', () => {
+    // 게이트를 통과한 난수는 [0, 0.6] 안에만 있다. 그 사실을 잊고 원래 범위인 것처럼
+    // 인덱스를 뽑으면 마지막 몸짓이 25%, 나머지는 각 8% 가 된다. 실제로 그랬다.
+    const counts = new Map<string, number>()
+    const N = 60_000
+    for (let i = 0; i < N; i++) {
+      const a = decideIdleAction(ctx(), i / N)
+      if (a.kind === 'gesture') counts.set(a.motion, (counts.get(a.motion) ?? 0) + 1)
+    }
+
+    expect(counts.size).toBe(IDLE_GESTURES.length)
+    const share = [...counts.values()].map((c) => c / N)
+    const expected = 0.6 / IDLE_GESTURES.length
+    for (const s of share) expect(Math.abs(s - expected)).toBeLessThan(expected * 0.05)
+  })
+
+  it('행동할 확률이 60% 다', () => {
+    let acted = 0
+    const N = 10_000
+    for (let i = 0; i < N; i++) if (decideIdleAction(ctx(), i / N).kind === 'gesture') acted++
+    expect(acted / N).toBeCloseTo(0.6, 2)
+  })
 })
 
 describe('nextIdleDelayMs', () => {
