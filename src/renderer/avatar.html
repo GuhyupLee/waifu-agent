@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>유로실라 유니아</title>
+    <style>
+      /* 창 자체가 투명하므로 문서 전체가 배경 없이 비어 있어야 한다.
+         어느 한 곳에라도 불투명 배경을 주면 그 사각형이 그대로 화면에 뜬다. */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        /* 오버레이에서 텍스트 선택 커서가 뜨면 어색하다. */
+        user-select: none;
+        cursor: default;
+      }
+      #avatar-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="avatar-canvas"></canvas>
+    <script type="module" src="./avatar/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "backend": {
+    "active": "claude-code",
+    "failover": true,
+    "claudeCode": { "bin": "claude" },
+    "codex": { "bin": "codex" }
+  },
+  "permission": {
+    "mode": "guarded",
+    "workspaces": [],
+    "autoApprove": ["Read", "Glob", "Grep", "TodoWrite", "NotebookRead"]
+  },
+  "avatar": {
+    "modelPath": "resources/models/AvatarSample_A.vrm",
+    "scale": 1,
+    "anchor": { "x": 0.85, "y": 0 },
+    "alwaysOnTop": true
+  },
+  "voice": {
+    "enabled": false,
+    "engineUrl": "http://127.0.0.1:10101",
+    "speakerId": 0,
+    "speedScale": 1,
+    "sttHotkey": "Alt+Space"
+  },
+  "persona": {
+    "name": "ミオ",
+    "instructions": "",
+    "subtitleLang": "ko"
+  }
+}

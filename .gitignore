@@ -1,0 +1,22 @@
+node_modules/
+out/
+dist/
+release/
+*.log
+*.tsbuildinfo
+
+# 사용자 데이터 — 모델/모션 에셋은 라이선스가 제각각이라 커밋하지 않는다
+resources/models/*
+!resources/models/.gitkeep
+resources/motions/*
+!resources/motions/.gitkeep
+
+# 런타임에 생성되는 사용자 설정 (waifu.config.example.json 이 템플릿)
+waifu.config.json
+
+# 로컬 AI 에이전트 지침과 저장소 전용 스킬
+/AGENTS.md
+/CLAUDE.md
+/.agents/skills/
+/.claude/skills/
+/.codex/skills/
