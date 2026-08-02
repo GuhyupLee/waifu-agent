@@ -1,6 +1,16 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, powerMonitor, screen } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  globalShortcut,
+  ipcMain,
+  Menu,
+  powerMonitor,
+  screen,
+  Tray
+} from 'electron'
 import { IPC } from '@shared/protocol'
 import type { AvatarEvent, WaifuConfig } from '@shared/protocol'
 import {
@@ -20,6 +30,7 @@ import { PushToTalkHotkey } from './voice/hotkey'
 import { pingEngine } from './voice/tts'
 import { DiscordBot } from './discord/bot'
 import { UnityAvatarShell } from './avatar/shell'
+import { shouldQuitOnClose, syncLaunchAtLogin, trayMenu } from './system/integration'
 import type { PermissionDecision } from '@shared/protocol'
 
 // 둘 다 app 준비 **전에** 걸어야 한다. 준비 후에 부르면 조용히 무시된다.
@@ -466,6 +477,92 @@ function createWindows(config: WaifuConfig): void {
 let gazeTimer: NodeJS.Timeout | null = null
 let waifu: Waifu | null = null
 let unityShell: UnityAvatarShell | null = null
+let tray: Tray | null = null
+/** 트레이의 '종료' 를 눌렀는가. 창 닫기와 진짜 종료를 구분한다. */
+let quitting = false
+
+/**
+ * 시스템 트레이. 창을 닫아도 앱이 남는 설정에서는 **되살릴 유일한 입구**다.
+ *
+ * 아이콘 파일이 없으면 트레이를 만들지 않는다. Electron 은 빈 아이콘으로도 Tray 를
+ * 만들어주는데, Windows 에서 그건 클릭할 수 없는 투명한 칸으로 보인다 —
+ * 트레이로 숨은 앱을 되살릴 방법이 없어진다.
+ */
+function setUpTray(config: WaifuConfig): void {
+  if (!config.system.trayIcon) return
+
+  const iconPath = join(app.getAppPath(), 'resources', 'tray.png')
+  if (!existsSync(iconPath)) {
+    process.stderr.write(`[tray] 아이콘이 없어 트레이를 만들지 않는다: ${iconPath}\n`)
+    return
+  }
+
+  tray = new Tray(iconPath)
+  tray.setToolTip(config.persona.name)
+  refreshTray(config)
+
+  // 더블클릭으로 채팅을 연다. 메뉴를 거치지 않는 빠른 길이 있어야 한다.
+  tray.on('double-click', () => showPanel())
+}
+
+function refreshTray(config: WaifuConfig): void {
+  if (!tray) return
+
+  const template = trayMenu(config, unityShell?.connected ?? false).map((item) => {
+    if (item.type === 'separator') return { type: 'separator' as const }
+    return {
+      label: item.label,
+      type: item.type === 'checkbox' ? ('checkbox' as const) : ('normal' as const),
+      checked: item.checked,
+      enabled: item.id !== 'status',
+      click: () => onTrayClick(item.id ?? '')
+    }
+  })
+  tray.setContextMenu(Menu.buildFromTemplate(template))
+}
+
+function onTrayClick(id: string): void {
+  const config = loadConfig()
+  switch (id) {
+    case 'show-panel':
+      showPanel()
+      break
+
+    case 'toggle-avatar':
+      // 아바타만 껐다 켠다. 에이전트는 계속 돈다.
+      unityShell?.send({ type: 'set-presence', asleep: (unityShell?.connected ?? false) })
+      break
+
+    case 'toggle-sleep':
+      unityShell?.send({ type: 'set-presence', asleep: true })
+      break
+
+    case 'launch-at-login': {
+      const next: WaifuConfig = {
+        ...config,
+        system: { ...config.system, launchAtLogin: !config.system.launchAtLogin }
+      }
+      saveConfig(next)
+      syncLaunchAtLogin(app, next)
+      refreshTray(next)
+      break
+    }
+
+    case 'quit':
+      quitting = true
+      app.quit()
+      break
+  }
+}
+
+function showPanel(): void {
+  if (panelWindow && !panelWindow.isDestroyed()) {
+    panelWindow.show()
+    panelWindow.focus()
+    return
+  }
+  createWindows(loadConfig())
+}
 
 /**
  * Unity 셸이 올린 이벤트.
@@ -587,6 +684,13 @@ void app.whenReady().then(async () => {
   startDiscord(config)
   await startUnityShell(config)
 
+  const login = syncLaunchAtLogin(app, config)
+  if (login === 'unsupported' && config.system.launchAtLogin) {
+    // 조용히 넘어가면 사용자는 등록된 줄 안다.
+    process.stderr.write('[system] 이 플랫폼은 로그인 자동 실행을 지원하지 않는다\n')
+  }
+  setUpTray(config)
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindows(loadConfig())
   })
@@ -604,8 +708,14 @@ app.on('before-quit', () => {
   // Unity 가 브리지 단절을 보고 스스로 끝내는 것, 두 겹이면 고아가 남지 않는다.
   // Electron 이 크래시하면 이 줄은 아예 실행되지 않으므로 저쪽 자폭이 진짜 안전망이다.
   void unityShell?.stop()
+  // 트레이를 놓지 않으면 종료 뒤에도 아이콘이 남아 클릭할 때까지 사라지지 않는다.
+  tray?.destroy()
+  tray = null
 })
 
 app.on('window-all-closed', () => {
+  // 트레이로 숨는 설정이면 창이 다 닫혀도 살아 있는다. 트레이 아이콘이 없으면
+  // 되살릴 방법이 없으므로 그때는 종료한다 — shouldQuitOnClose 가 둘을 같이 본다.
+  if (!quitting && !shouldQuitOnClose(loadConfig())) return
   if (process.platform !== 'darwin') app.quit()
 })

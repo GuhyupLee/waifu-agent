@@ -48,6 +48,9 @@ export class UnityAvatarShell {
         this.log('info', 'Unity 셸이 연결됐다.')
         // 이 실행은 성공이다. 재시작 예산을 되돌려준다.
         this.process?.notifyConnected()
+        // 존재감 설정은 **연결될 때마다** 보낸다. 셸이 재시작되면 기본값으로
+        // 돌아가 있으므로, 한 번만 보내면 재시작 뒤 사용자 설정이 조용히 사라진다.
+        this.pushPresence()
       },
       onDisconnect: (reason) => this.log('warn', `Unity 셸 연결 끊김 — ${reason}`),
       onReject: (reason) => this.log('error', `Unity 셸 연결 거절 — ${reason}`)
@@ -88,6 +91,11 @@ export class UnityAvatarShell {
   /** 연결이 없으면 false. 큐에 쌓지 않는다. */
   send(command: AvatarCommand): boolean {
     return this.bridge?.send(command) ?? false
+  }
+
+  /** 현재 설정의 존재감 블록을 셸로 밀어넣는다. */
+  pushPresence(): boolean {
+    return this.send({ type: 'presence-config', settings: this.config.avatar.presence })
   }
 
   /**

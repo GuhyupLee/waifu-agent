@@ -23,11 +23,17 @@ namespace WaifuAvatar
         [SerializeField] Transform _avatarRoot;
 
         readonly AvatarStateMachine _state = new AvatarStateMachine();
+        readonly VrmaLibrary _motions = new VrmaLibrary();
+        readonly PoseOverlay _overlay = new PoseOverlay();
+        PresenceDirector _presence;
+
         AvatarBridgeClient _bridge;
         Vrm10Instance _model;
         Coroutine _speaking;
         string _speakingId;
         float _scale = 1f;
+        float _elapsed;
+        PresenceSettingsDto _settings = new PresenceSettingsDto();
 
         float _fpsTimer;
         int _fpsFrames;
@@ -49,7 +55,32 @@ namespace WaifuAvatar
             if (_dragger == null) _dragger = FindAnyObjectByType<AvatarDragger>();
             if (_avatarRoot == null) _avatarRoot = transform;
 
+            // 모션은 플레이어 옆의 motions 폴더에서 읽는다. 빌드에 굽지 않는 이유는
+            // 55개를 전부 AssetBundle 로 만들 이유가 없고, 사용자가 자기 것을 넣을
+            // 여지를 남기기 위해서다.
+            _motions.Scan(ResolveMotionDirectory());
+            _presence = new PresenceDirector(_motions);
+            _presence.SleepChanged += asleep =>
+            {
+                Debug.Log($"[waifu] 수면 상태 {(asleep ? "잠듦" : "깨어남")}");
+                _bridge?.SendEvent(new PresenceEvent { asleep = asleep });
+            };
+
             ConfigureWindow();
+        }
+
+        /// <summary>
+        /// 개발 중에는 에디터의 프로젝트 루트 기준, 빌드에서는 실행 파일 옆을 본다.
+        /// 못 찾으면 빈 문자열 — 라이브러리가 경고를 남기고 모션 없이 돈다.
+        /// </summary>
+        static string ResolveMotionDirectory()
+        {
+            var beside = System.IO.Path.Combine(Application.dataPath, "..", "motions");
+            if (System.IO.Directory.Exists(beside)) return beside;
+
+            // 저장소 안에서 에디터로 돌릴 때: unity/WaifuAvatar/Assets -> 저장소 루트
+            var repo = System.IO.Path.Combine(Application.dataPath, "..", "..", "..", "resources", "motions");
+            return System.IO.Directory.Exists(repo) ? repo : string.Empty;
         }
 
         void ConfigureWindow()
@@ -73,7 +104,27 @@ namespace WaifuAvatar
 
         IEnumerator Start()
         {
-            if (_dragger != null) _dragger.Clicked += () => _bridge?.SendEvent(new ClickedEvent());
+            if (_dragger != null)
+            {
+                _dragger.Clicked += () =>
+                {
+                    // 만지면 깬다. 자는 아바타를 눌렀는데 아무 일도 없으면 고장으로 보인다.
+                    _presence?.Poke();
+                    _bridge?.SendEvent(new ClickedEvent());
+                    if (_settings.touch) ReactToTouch();
+                };
+                _dragger.DragStarted += () =>
+                {
+                    _presence?.Poke();
+                    if (_settings.dragMotion) _presence?.RequestClip("drag", this);
+                };
+                _dragger.DragEnded += () =>
+                {
+                    _presence?.Poke();
+                    // 놓으면 idle 로 돌아간다. 드래그 자세로 굳으면 매달린 것처럼 보인다.
+                    if (_settings.dragMotion) _presence?.Interrupt();
+                };
+            }
 
             if (!AvatarBridgeClient.TryReadEnvironment(out var url, out var token, out var error))
             {
@@ -117,7 +168,73 @@ namespace WaifuAvatar
             }
 
             _bridge?.Drain(Dispatch);
+
+            var delta = Time.deltaTime;
+            _elapsed += delta;
+            // 말하는 중에는 idle 이 끼어들면 안 된다. 발화 모션을 잘라먹는다.
+            _presence?.Update(delta, CursorDirection(), this, _speaking != null);
             ReportFps();
+        }
+
+        /// <summary>
+        /// 커서가 아바타 기준 어느 쪽에 있는지(-1..1).
+        ///
+        /// Unity 입력이 아니라 OS 커서를 쓴다 — **클릭 통과 중에는 Unity 가 마우스
+        /// 이벤트를 받지 못하므로**, 그 상태에서 어디를 보고 있는지 알 방법이 그것뿐이다.
+        /// </summary>
+        Vector2 CursorDirection()
+        {
+            var controller = Kirurobo.UniWindowController.current;
+            if (controller == null) return Vector2.zero;
+
+            var cursor = Kirurobo.UniWindowController.GetCursorPosition();
+            var size = controller.windowSize;
+            var center = controller.windowPosition + size * 0.5f;
+            if (size.x <= 0f || size.y <= 0f) return Vector2.zero;
+
+            // 창 크기의 2배 범위를 ±1 로 본다. 창 안에서만 반응하면 데스크탑을
+            // 가로지르는 커서를 따라보지 못해 남처럼 보인다.
+            var x = Mathf.Clamp((cursor.x - center.x) / size.x, -1f, 1f);
+            // 화면 y 는 아래로 증가한다. 위를 볼 때 +가 되도록 뒤집는다.
+            var y = Mathf.Clamp(-(cursor.y - center.y) / size.y, -1f, 1f);
+            return new Vector2(x, y);
+        }
+
+        /// <summary>
+        /// 오버레이는 애니메이션이 본을 쓴 **뒤에** 얹어야 한다.
+        /// LateUpdate 여야 그 순서가 보장된다.
+        /// </summary>
+        void LateUpdate()
+        {
+            if (_model == null || _presence == null) return;
+            if (!_settings.tracking.enabled) return;
+
+            var animator = _model.GetComponent<Animator>();
+            if (animator == null || animator.avatar == null || !animator.avatar.isHuman) return;
+
+            var rotations = OverlayMath.Compute(new OverlayInput
+            {
+                Elapsed = _elapsed,
+                // 자는 동안에는 호흡만 남기고 추적을 끈다.
+                Weight = 1f,
+                Yaw = _presence.HeadYaw,
+                Pitch = _presence.HeadPitch,
+                MotionPlaying = true
+            });
+
+            // **값이 0 이어도 반드시 매 프레임 전부 부른다.** 지난 프레임에 얹은
+            // 오프셋을 걷어내는 것도 AddRotation 의 일이라, 건너뛰면 자세가 굳는다.
+            Add(animator, HumanBodyBones.Spine, rotations.Spine);
+            Add(animator, HumanBodyBones.Chest, rotations.Chest);
+            Add(animator, HumanBodyBones.LeftShoulder, rotations.LeftShoulder);
+            Add(animator, HumanBodyBones.RightShoulder, rotations.RightShoulder);
+            Add(animator, HumanBodyBones.Neck, rotations.Neck);
+            Add(animator, HumanBodyBones.Head, rotations.Head);
+        }
+
+        void Add(Animator animator, HumanBodyBones bone, Vector3 rotation)
+        {
+            _overlay.AddRotation(animator.GetBoneTransform(bone), rotation);
         }
 
         // ───────────────────────── 명령 ─────────────────────────
@@ -151,6 +268,20 @@ namespace WaifuAvatar
                     SetScale(command.scale);
                     break;
 
+                case "presence-config":
+                    _settings = command.settings ?? new PresenceSettingsDto();
+                    _presence?.Apply(_settings);
+                    break;
+
+                case "set-presence":
+                    _presence?.SetAsleep(command.asleep, this);
+                    break;
+
+                case "wake":
+                    // 절전 복귀. 몇 시간치 delta 를 한 번에 적분하면 스프링이 발산한다.
+                    _presence?.Wake();
+                    break;
+
                 default:
                     // 알 수 없는 명령으로 셸이 죽지 않는다. 계약이 늘어날 때
                     // 옛 셸이 새 main 을 만나면 여기로 온다.
@@ -181,6 +312,10 @@ namespace WaifuAvatar
             VrmModelLoader.Place(_model, _avatarRoot);
             ApplyScale();
             _state.Bind(_model);
+            // 모델이 바뀌면 본이 통째로 사라진다. 남은 오버레이 상태로 없는 본을
+            // 걷어내려 들면 안 된다.
+            _overlay.Clear();
+            _presence?.Bind(_model);
 
             Debug.Log($"[waifu] 모델 로드 완료 — 표정 {loaded.Presets.Length}종, " +
                       $"시선 {(loaded.HasLookAt ? "있음" : "없음")}");
@@ -198,7 +333,12 @@ namespace WaifuAvatar
         {
             StopSpeaking();
 
+            // 말을 걸었으면 자고 있을 이유가 없다. 자는 아바타가 말만 하면 이상하다.
+            _presence?.Poke();
+            // 발화 중 표정은 say 가 실어 보낸 emotion 이 쥔다. 상태 placeholder 로
+            // 덮어쓰면 에이전트가 지정한 감정이 사라진다.
             if (!string.IsNullOrEmpty(command.emotion)) _state.SetEmotion(command.emotion, 1f);
+            if (!string.IsNullOrEmpty(command.motion)) _presence?.RequestClip(command.motion, this);
             Debug.Log($"[waifu] say({command.id}): {command.text}");
 
             _speakingId = command.id;
@@ -235,6 +375,42 @@ namespace WaifuAvatar
             var id = _speakingId;
             _speakingId = null;
             _bridge?.SendEvent(new SpeechEndEvent { id = id });
+        }
+
+        /// <summary>
+        /// 만진 자리에 따라 표정을 바꾸고 main 에 알린다.
+        ///
+        /// **여기서 LLM 을 부르지 않는다.** 쓰다듬을 때마다 모델을 태우면 구독 한도가
+        /// 순식간에 사라지고, 반응이 1초 뒤에 오면 만진 것과 이어지지 않는다.
+        /// </summary>
+        void ReactToTouch()
+        {
+            var region = TouchRegions.Classify(CursorInAvatar());
+            if (region == TouchRegion.None) return;
+
+            var emotion = TouchRegions.EmotionFor(region);
+            if (emotion != null) _state.SetEmotion(emotion, 1f);
+
+            _bridge?.SendEvent(new TouchedEvent
+            {
+                bone = TouchRegions.BoneNameFor(region),
+                kind = "click"
+            });
+        }
+
+        /// <summary>커서가 창 안에서 어디인지. x 0..1(좌->우), y 0..1(발->머리).</summary>
+        Vector2 CursorInAvatar()
+        {
+            var controller = Kirurobo.UniWindowController.current;
+            if (controller == null) return new Vector2(-1f, -1f);
+
+            var size = controller.windowSize;
+            if (size.x <= 0f || size.y <= 0f) return new Vector2(-1f, -1f);
+
+            var cursor = Kirurobo.UniWindowController.GetCursorPosition();
+            var offset = cursor - controller.windowPosition;
+            // 창 좌표는 위에서 아래로 증가한다. 부위 판정은 발이 0 이라 뒤집는다.
+            return new Vector2(offset.x / size.x, 1f - offset.y / size.y);
         }
 
         void SetScale(float scale)

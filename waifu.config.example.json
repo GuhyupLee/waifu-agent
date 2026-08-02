@@ -15,7 +15,23 @@
     "scale": 1,
     "anchor": { "x": 0.85, "y": 0 },
     "alwaysOnTop": true,
-    "renderer": "renderer"
+    "renderer": "renderer",
+    "presence": {
+      "idle": { "enabled": true, "minHoldSec": 8, "maxHoldSec": 40 },
+      "tracking": { "enabled": true, "eye": 1, "head": 1, "body": 0.5 },
+      "touch": true,
+      "dragMotion": true,
+      "clampToScreen": true,
+      "sleep": { "enabled": true, "afterIdleMin": 20, "byClock": false, "fromHour": 23, "toHour": 7 },
+      "bubble": { "enabled": true, "maxChars": 140 }
+    },
+    "rememberPerMonitor": true,
+    "perMonitor": {}
+  },
+  "system": {
+    "launchAtLogin": false,
+    "trayIcon": true,
+    "closeToTray": true
   },
   "unity": {
     "playerPath": "",

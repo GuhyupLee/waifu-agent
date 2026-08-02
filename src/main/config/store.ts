@@ -42,7 +42,21 @@ function merge(base: WaifuConfig, patch: Partial<WaifuConfig>): WaifuConfig {
   return {
     backend: { ...base.backend, ...patch.backend },
     permission: { ...base.permission, ...patch.permission },
-    avatar: { ...base.avatar, ...patch.avatar },
+    // avatar.presence 는 두 단계 더 깊다. 얕게 합치면 사용자가 sleep 만 적었을 때
+    // idle·tracking 같은 형제 블록이 통째로 사라진다.
+    avatar: {
+      ...base.avatar,
+      ...patch.avatar,
+      presence: {
+        ...base.avatar.presence,
+        ...patch.avatar?.presence,
+        idle: { ...base.avatar.presence.idle, ...patch.avatar?.presence?.idle },
+        tracking: { ...base.avatar.presence.tracking, ...patch.avatar?.presence?.tracking },
+        sleep: { ...base.avatar.presence.sleep, ...patch.avatar?.presence?.sleep },
+        bubble: { ...base.avatar.presence.bubble, ...patch.avatar?.presence?.bubble }
+      }
+    },
+    system: { ...base.system, ...patch.system },
     unity: { ...base.unity, ...patch.unity },
     chat: { ...base.chat, ...patch.chat },
     // voice.stt 는 한 단계 더 깊다. 얕게 합치면 사용자가 stt 만 적었을 때

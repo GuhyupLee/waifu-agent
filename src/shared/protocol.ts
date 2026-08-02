@@ -131,6 +131,75 @@ export type AvatarCommand =
    * 렌더러가 이동 모션을 재생하고 몸을 진행 방향으로 살짝 기울인다.
    */
   | { type: 'roam'; moving: boolean; direction: -1 | 0 | 1 }
+  /**
+   * 존재감 설정을 통째로 밀어넣는다 (Phase 2).
+   *
+   * `tuning` 에 합치지 않은 이유: 저쪽은 기존 렌더러가 쓰는 고정 모양이라 필드를
+   * 늘리면 두 소비자가 같이 굳는다. 그리고 이 설정은 Unity 셸만 해석한다.
+   */
+  | { type: 'presence-config'; settings: PresenceSettings }
+  /**
+   * 재우거나 깨운다. 보통은 셸이 유휴 시간을 보고 스스로 판단하지만,
+   * 에이전트가 말을 걸면 main 이 깨워야 한다.
+   */
+  | { type: 'set-presence'; asleep: boolean }
+
+/**
+ * 아바타가 "거기 살고 있는" 것처럼 보이게 하는 설정들 (Phase 2).
+ *
+ * **전부 끌 수 있어야 한다.** 데스크탑에 상주하는 것이라 취향과 작업 방해 정도가
+ * 사람마다 크게 갈린다. 끄는 길이 없으면 앱을 지우는 것이 유일한 선택지가 된다.
+ *
+ * 이 설정들이 만드는 반응에는 **LLM 을 부르지 않는다.** idle 전환, 클릭 반응,
+ * 시간대 반응은 규칙으로 처리한다 — 구독 한도를 태우고 지연도 눈에 띈다.
+ */
+export interface PresenceSettings {
+  /** 여러 idle 클립을 번갈아 재생한다. */
+  idle: {
+    enabled: boolean
+    /** 한 클립을 유지하는 시간 범위(초). 지수분포로 뽑아 규칙성을 지운다. */
+    minHoldSec: number
+    maxHoldSec: number
+  }
+  /**
+   * 커서를 눈·머리·상체가 따라본다. 각 세기는 0(안 봄)..1(기본).
+   * 셋을 같은 곡선으로 움직이면 눈이 머리에 붙어 보이므로 따로 둔다.
+   */
+  tracking: {
+    enabled: boolean
+    eye: number
+    head: number
+    body: number
+  }
+  /** 만지면 반응한다 (머리 쓰다듬기·찌르기). */
+  touch: boolean
+  /** 잡아 끌 때 전용 모션을 쓴다. 끄면 자세 그대로 끌린다. */
+  dragMotion: boolean
+  /** 창이 화면 밖으로 나가지 않게 붙잡는다. */
+  clampToScreen: boolean
+  /**
+   * 오래 두면 잔다.
+   *
+   * 시간대 규칙은 `byClock` 으로 켠다. "null 이면 규칙 없음" 같은 암묵적 약속을 쓰지
+   * 않는 이유가 둘이다 — 설정 파일을 손으로 고치는 사람에게 의미가 드러나야 하고,
+   * Unity 의 JsonUtility 는 null 을 int 로 받으면 **0(자정)으로 읽어** 의도하지 않은
+   * 시간에 아바타를 재운다.
+   */
+  sleep: {
+    enabled: boolean
+    afterIdleMin: number
+    byClock: boolean
+    /** `byClock` 이 false 면 무시한다. 자정을 넘기는 구간(23 -> 7)도 된다. */
+    fromHour: number
+    toHour: number
+  }
+  /** 말풍선으로 자막을 띄운다. */
+  bubble: {
+    enabled: boolean
+    /** 이보다 길면 잘라 보여준다. 긴 답변이 화면을 덮는 것을 막는다. */
+    maxChars: number
+  }
+}
 
 // ─────────────────────── 아바타 -> main ───────────────────────
 
@@ -177,6 +246,11 @@ export type AvatarEvent =
    * 이건 에이전트가 알아도 되는 사건이라 main 으로 올린다.
    */
   | { type: 'touched'; bone: string; kind: string }
+  /**
+   * 잠들거나 깼다. 셸이 스스로 판단한 결과도 여기로 올라온다 —
+   * main 이 모르면 자는 아바타에게 말을 걸어놓고 왜 반응이 없는지 알 수 없다.
+   */
+  | { type: 'presence'; asleep: boolean }
 
 // ─────────────────────── Unity Avatar Bridge (전송 계층) ───────────────────────
 
@@ -358,6 +432,26 @@ export interface WaifuConfig {
      * 남아 있는 동안 기존 렌더러를 지우면 되돌아갈 곳이 없어진다.
      */
     renderer: 'renderer' | 'unity'
+    /** Phase 2 존재감. 전부 끌 수 있다. */
+    presence: PresenceSettings
+    /**
+     * 모니터마다 위치와 배율을 따로 기억한다.
+     *
+     * 노트북을 외부 모니터에 붙였다 뗐다 하면 해상도가 바뀌는데, 하나만 기억하면
+     * 매번 아바타가 엉뚱한 자리에 뜨거나 화면 밖으로 나간다.
+     */
+    rememberPerMonitor: boolean
+    /** 모니터 식별자 -> 저장된 배치. `rememberPerMonitor` 가 켜져 있을 때만 쓴다. */
+    perMonitor: Record<string, { anchor: { x: number; y: number }; scale: number }>
+  }
+  /** OS 통합. Windows 전용 기능은 다른 OS 에서 조용히 꺼진다. */
+  system: {
+    /** 로그인할 때 자동 실행. */
+    launchAtLogin: boolean
+    /** 시스템 트레이 아이콘을 띄운다. */
+    trayIcon: boolean
+    /** 창을 닫아도 종료하지 않고 트레이에 남는다. */
+    closeToTray: boolean
   }
   unity: {
     /**
@@ -465,7 +559,25 @@ export const DEFAULT_CONFIG: WaifuConfig = {
     hitAlpha: 8,
     swayStrength: 1,
     ambientMotion: true,
-    renderer: 'renderer'
+    renderer: 'renderer',
+    presence: {
+      idle: { enabled: true, minHoldSec: 8, maxHoldSec: 40 },
+      tracking: { enabled: true, eye: 1, head: 1, body: 0.5 },
+      touch: true,
+      dragMotion: true,
+      clampToScreen: true,
+      // 기본은 유휴 시간만 본다. 시간대로 재우는 건 사람마다 생활 패턴이 달라
+      // 켜는 사람만 켜게 둔다.
+      sleep: { enabled: true, afterIdleMin: 20, byClock: false, fromHour: 23, toHour: 7 },
+      bubble: { enabled: true, maxChars: 140 }
+    },
+    rememberPerMonitor: true,
+    perMonitor: {}
+  },
+  system: {
+    launchAtLogin: false,
+    trayIcon: true,
+    closeToTray: true
   },
   unity: {
     playerPath: '',

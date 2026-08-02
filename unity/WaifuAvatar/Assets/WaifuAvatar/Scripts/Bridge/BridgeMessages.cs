@@ -87,6 +87,60 @@ namespace WaifuAvatar.Bridge
         // motion
         public string name;
         public bool loop;
+
+        // set-presence
+        public bool asleep;
+
+        // presence-config
+        public PresenceSettingsDto settings;
+    }
+
+    /// <summary>protocol.ts 의 PresenceSettings 미러 (Phase 2).</summary>
+    [Serializable]
+    public class PresenceSettingsDto
+    {
+        public IdleDto idle = new IdleDto();
+        public TrackingDto tracking = new TrackingDto();
+        public bool touch = true;
+        public bool dragMotion = true;
+        public bool clampToScreen = true;
+        public SleepDto sleep = new SleepDto();
+        public BubbleDto bubble = new BubbleDto();
+    }
+
+    [Serializable]
+    public class IdleDto
+    {
+        public bool enabled = true;
+        public float minHoldSec = 8f;
+        public float maxHoldSec = 40f;
+    }
+
+    [Serializable]
+    public class TrackingDto
+    {
+        public bool enabled = true;
+        public float eye = 1f;
+        public float head = 1f;
+        public float body = 0.5f;
+    }
+
+    [Serializable]
+    public class SleepDto
+    {
+        public bool enabled = true;
+        public float afterIdleMin = 20f;
+        /// <summary>false 면 fromHour/toHour 를 아예 보지 않는다.</summary>
+        public bool byClock;
+        public int fromHour = 23;
+        public int toHour = 7;
+    }
+
+    [Serializable]
+    public class BubbleDto
+    {
+        public bool enabled = true;
+        public int maxChars = 140;
     }
 
     [Serializable]
@@ -122,6 +176,22 @@ namespace WaifuAvatar.Bridge
     {
         public string type = "fps";
         public float value;
+    }
+
+    [Serializable]
+    public class PresenceEvent
+    {
+        public string type = "presence";
+        public bool asleep;
+    }
+
+    /// <summary>사용자가 아바타를 만졌다. 반응 자체는 셸이 이미 했고, 이건 통보다.</summary>
+    [Serializable]
+    public class TouchedEvent
+    {
+        public string type = "touched";
+        public string bone;
+        public string kind;
     }
 
     /// <summary>

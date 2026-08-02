@@ -62,14 +62,37 @@ namespace WaifuAvatar.Window
             _dragging = true;
             _grabCursor = cursor;
             _grabWindow = _controller.windowPosition;
+            RefreshMonitors();
             DragStarted?.Invoke();
         }
+
+        /// <summary>화면 밖으로 나가지 않게 붙잡을지. 설정에서 끌 수 있다.</summary>
+        public bool ClampToScreen = true;
 
         void OnDrag(Vector2 cursor)
         {
             // 잡은 순간의 창 위치에 커서 이동량을 더한다. 매 프레임 현재 위치에
             // 증분을 더하면 반올림 오차가 쌓여 커서와 아바타가 서서히 어긋난다.
-            _controller.windowPosition = _grabWindow + (cursor - _grabCursor);
+            var wanted = _grabWindow + (cursor - _grabCursor);
+            _controller.windowPosition = ClampToScreen
+                ? ScreenClamp.Clamp(wanted, _controller.windowSize, Monitors())
+                : wanted;
+        }
+
+        /// <summary>
+        /// 모니터 사각형들. 드래그 중에만 필요해서 매 프레임 새로 묻지 않고
+        /// 잡을 때 한 번 읽는다 — 드래그 도중 모니터 구성이 바뀌는 일은 없다.
+        /// </summary>
+        Rect[] _monitors = System.Array.Empty<Rect>();
+
+        Rect[] Monitors() => _monitors;
+
+        void RefreshMonitors()
+        {
+            var count = UniWindowController.GetMonitorCount();
+            var rects = new Rect[Mathf.Max(0, count)];
+            for (var i = 0; i < rects.Length; i++) rects[i] = UniWindowController.GetMonitorRect(i);
+            _monitors = rects;
         }
 
         void OnRelease(Vector2 cursor)
