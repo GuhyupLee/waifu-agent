@@ -63,6 +63,23 @@ function showStatus(state: string): void {
 
 window.addEventListener('resize', () => scene.resize())
 
+// ─────────────────────── 만지면 반응한다 ───────────────────────
+//
+// 머리를 원 그리며 쓰다듬으면 좋아하고, 손을 건드리면 놀란다.
+// 표정은 잠깐만 유지하고 원래대로 돌아간다 — 계속 웃고 있으면 무섭다.
+
+let touchExpressionTimer: number | undefined
+
+scene.onTouch = (e) => {
+  scene.setEmotion(e.emotion)
+  if (e.motion) scene.playMotion(e.motion, false)
+
+  window.clearTimeout(touchExpressionTimer)
+  touchExpressionTimer = window.setTimeout(() => scene.setEmotion('neutral'), 2600)
+
+  waifu.sendAvatarEvent({ type: 'touched', bone: e.bone, kind: e.kind })
+}
+
 // ─────────────────────── 드래그: 크레인에 매달린 것처럼 ───────────────────────
 //
 // 창을 실제로 옮기는 주체는 main 이다. 여기서는 화면 좌표 이동량만 넘기고,

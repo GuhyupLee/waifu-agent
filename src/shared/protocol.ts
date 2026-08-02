@@ -172,6 +172,11 @@ export type AvatarEvent =
   | { type: 'recorded'; wavBase64: string | null }
   /** 녹음 상태 변화. UI 표시용. */
   | { type: 'recording'; on: boolean }
+  /**
+   * 사용자가 아바타를 만졌다. 아바타의 반응(표정·모션)은 렌더러가 이미 처리했고,
+   * 이건 에이전트가 알아도 되는 사건이라 main 으로 올린다.
+   */
+  | { type: 'touched'; bone: string; kind: string }
 
 // ─────────────────────── 에이전트 백엔드 이벤트 ───────────────────────
 

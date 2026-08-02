@@ -13,6 +13,7 @@ import {
 import type { Emotion, Viseme } from '@shared/protocol'
 import { applyIdlePose, clampAngle, damp, fitCameraToObject } from './pose'
 import { HangPhysics } from './hang'
+import { PatDetector, TOUCH_REGIONS, findTouchedRegion, pickReactionMotion } from './touch'
 import {
   DEFAULT_AMBIENT_MOTION,
   ambientHoldSeconds,
@@ -810,6 +811,8 @@ export class VrmScene {
 
     // 믹서와 humanoid 복사가 끝난 실제 손 위치를 사용해야 한 프레임도 미끄러지지 않는다.
     this.pinDragGripToCursor()
+    // 본이 최종 위치로 간 뒤에 만져졌는지 본다. 그 전에 하면 한 프레임 전 자세로 판정한다.
+    this.updateTouch(delta)
     if (this.refitAfterDrag && !this.dragGrip && this.dragReleaseRemaining <= 0) {
       this.refitAfterDrag = false
       this.fitCamera()
@@ -904,6 +907,74 @@ export class VrmScene {
    * 재시작을 요구하면 슬라이더를 움직이며 맞출 수가 없다. 여기 오는 것들은
    * 전부 다음 프레임부터 바로 적용된다.
    */
+  /**
+   * 만져졌는지 보고 반응한다.
+   *
+   * 3D 콜라이더를 쓰지 않는다 — 본의 월드 좌표를 화면에 투영해 커서와의 화면상 거리만
+   * 본다. 리그가 어떻게 생겼든 똑같이 동작하고 매 프레임 레이캐스트보다 훨씬 싸다.
+   */
+  private updateTouch(delta: number): void {
+    for (const [bone, until] of this.touchCooldowns) {
+      if (until <= this.elapsed) this.touchCooldowns.delete(bone)
+    }
+
+    // 잡고 끄는 중에는 만지는 게 아니다. 드래그 내내 반응이 쏟아지면 성가시다.
+    const humanoid = this.vrm?.humanoid
+    if (!humanoid || !this.pointer || this.dragGrip) {
+      this.patDetector.reset()
+      return
+    }
+
+    const positions = new Map<string, { x: number; y: number }>()
+    for (const region of TOUCH_REGIONS) {
+      if (positions.has(region.bone)) continue
+      const node = humanoid.getNormalizedBoneNode(region.bone as never)
+      if (!node) continue
+      node.getWorldPosition(this.touchWorld)
+      this.touchWorld.project(this.camera)
+      // NDC(-1..1) → CSS 픽셀. y 는 위아래가 뒤집힌다.
+      positions.set(region.bone, {
+        x: ((this.touchWorld.x + 1) / 2) * this.canvas.clientWidth,
+        y: ((1 - this.touchWorld.y) / 2) * this.canvas.clientHeight
+      })
+    }
+
+    const hit = findTouchedRegion(this.pointer, positions, this.canvas.clientHeight)
+    if (!hit) {
+      this.patDetector.reset()
+      return
+    }
+    if (this.touchCooldowns.has(hit.region.bone)) return
+
+    if (hit.region.kind === 'pat') {
+      // 원을 그려야 인정한다. 그냥 지나가는 것과 구분하려는 것이다.
+      if (!this.patDetector.update(hit.angle, performance.now())) return
+    } else {
+      // 콕 찌르는 부위는 들어온 순간 반응한다. 다만 머무는 동안 계속 터지지 않게
+      // 쿨다운이 곧바로 걸린다.
+      this.patDetector.reset()
+    }
+
+    this.touchCooldowns.set(hit.region.bone, this.elapsed + hit.region.cooldownMs / 1000)
+    this.onTouch?.({
+      bone: hit.region.bone,
+      kind: hit.region.kind,
+      emotion: hit.region.emotion,
+      motion: pickReactionMotion(hit.region, this.motionNames, Math.random())
+    })
+    void delta
+  }
+
+  /** 만져졌을 때 부를 콜백. main.ts 가 표정·모션·소리를 붙인다. */
+  onTouch:
+    | ((e: { bone: string; kind: string; emotion: Emotion; motion: string | null }) => void)
+    | null = null
+
+  private readonly patDetector = new PatDetector()
+  /** 부위별로 다음에 반응 가능한 시각(초, elapsed 기준). */
+  private readonly touchCooldowns = new Map<string, number>()
+  private readonly touchWorld = new THREE.Vector3()
+
   applyTuning(t: { hitAlpha: number; swayStrength: number; ambientMotion: boolean }): void {
     this.hitAlpha = t.hitAlpha
     this.hang.strength = t.swayStrength
