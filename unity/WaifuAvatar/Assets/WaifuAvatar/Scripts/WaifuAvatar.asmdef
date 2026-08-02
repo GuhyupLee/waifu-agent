@@ -1,0 +1,20 @@
+{
+  "name": "WaifuAvatar",
+  "rootNamespace": "WaifuAvatar",
+  "references": [
+    "UniGLTF",
+    "UniGLTF.Utils",
+    "VRM10",
+    "VrmLib",
+    "Kirurobo.UniWindowController"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

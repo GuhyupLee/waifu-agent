@@ -14,7 +14,13 @@
     "modelPath": "resources/models/AvatarSample_A.vrm",
     "scale": 1,
     "anchor": { "x": 0.85, "y": 0 },
-    "alwaysOnTop": true
+    "alwaysOnTop": true,
+    "renderer": "renderer"
+  },
+  "unity": {
+    "playerPath": "",
+    "maxRestarts": 3,
+    "launchTimeoutMs": 20000
   },
   "voice": {
     "enabled": false,

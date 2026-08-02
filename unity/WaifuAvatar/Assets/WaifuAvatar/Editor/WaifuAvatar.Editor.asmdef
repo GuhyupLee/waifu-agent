@@ -1,0 +1,19 @@
+{
+  "name": "WaifuAvatar.Editor",
+  "rootNamespace": "WaifuAvatar.Editor",
+  "references": [
+    "WaifuAvatar",
+    "Kirurobo.UniWindowController"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

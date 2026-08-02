@@ -43,6 +43,7 @@ function merge(base: WaifuConfig, patch: Partial<WaifuConfig>): WaifuConfig {
     backend: { ...base.backend, ...patch.backend },
     permission: { ...base.permission, ...patch.permission },
     avatar: { ...base.avatar, ...patch.avatar },
+    unity: { ...base.unity, ...patch.unity },
     chat: { ...base.chat, ...patch.chat },
     // voice.stt 는 한 단계 더 깊다. 얕게 합치면 사용자가 stt 만 적었을 때
     // engineUrl 같은 형제 필드가 사라진다.

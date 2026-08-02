@@ -178,6 +178,80 @@ export type AvatarEvent =
    */
   | { type: 'touched'; bone: string; kind: string }
 
+// ─────────────────────── Unity Avatar Bridge (전송 계층) ───────────────────────
+
+/**
+ * 브리지 프로토콜 버전. **호환되지 않는 변경마다 올린다.**
+ *
+ * Unity 는 Electron 과 따로 빌드되므로 버전이 어긋난 조합이 실제로 생긴다 —
+ * 앱만 업데이트하고 예전 플레이어가 남아 있는 경우다. 그때 조용히 반쯤 동작하면
+ * "명령이 가끔 안 먹는다"는 재현 불가능한 버그가 된다. 핸드셰이크에서 끊는 편이 낫다.
+ */
+export const AVATAR_PROTOCOL_VERSION = 1
+
+/** Unity 프로세스에 넘길 환경변수 이름. `CONTROL_ENV` 와 같은 패턴이다. */
+export const AVATAR_BRIDGE_ENV = {
+  port: 'WAIFU_AVATAR_PORT',
+  token: 'WAIFU_AVATAR_TOKEN'
+} as const
+
+/**
+ * 창을 세울 때 필요한 값들. **명령이 아니라 환경변수인 이유**가 있다.
+ *
+ * 이 값들은 첫 프레임을 그리기 **전에** 정해져야 한다. 핸드셰이크 뒤에 명령으로
+ * 보내면 창이 기본 위치에 한 번 떴다가 옮겨가는 게 보인다 — 투명 창이라 그 깜빡임이
+ * 유난히 눈에 띈다. 비밀값이 아니므로 환경변수로 넘겨도 잃을 것이 없다.
+ */
+export const AVATAR_WINDOW_ENV = {
+  anchorX: 'WAIFU_AVATAR_ANCHOR_X',
+  anchorY: 'WAIFU_AVATAR_ANCHOR_Y',
+  alwaysOnTop: 'WAIFU_AVATAR_TOPMOST',
+  hitAlpha: 'WAIFU_AVATAR_HIT_ALPHA',
+  scale: 'WAIFU_AVATAR_SCALE',
+  modelPath: 'WAIFU_AVATAR_MODEL'
+} as const
+
+/**
+ * 연결 후 Unity 가 보내야 하는 **첫 메시지**. 이것 말고 다른 게 먼저 오면 끊는다.
+ *
+ * 토큰을 URL 쿼리가 아니라 첫 프레임에 싣는 이유: 쿼리 문자열은 접속 로그와
+ * 프로세스 목록에 남는다. 같은 머신의 다른 프로세스가 읽을 수 있으면 토큰의 의미가 없다.
+ */
+export interface AvatarHello {
+  type: 'hello'
+  token: string
+  protocolVersion: number
+  client: 'unity'
+}
+
+/**
+ * 핸드셰이크 결과. 실패해도 이유를 돌려주고 끊는다 —
+ * 아무 말 없이 끊으면 Unity 쪽에서 토큰이 틀린 건지 앱이 죽은 건지 구분할 수 없다.
+ */
+export type AvatarHelloAck =
+  | { type: 'hello-ack'; ok: true; protocolVersion: number }
+  | { type: 'hello-ack'; ok: false; reason: 'bad-token' | 'bad-version' | 'malformed' }
+
+/** main -> Unity. 인증 후에만 흐른다. */
+export interface AvatarCommandEnvelope {
+  type: 'command'
+  seq: number
+  command: AvatarCommand
+}
+
+/** Unity -> main. 인증 후에만 받는다. */
+export interface AvatarEventEnvelope {
+  type: 'event'
+  event: AvatarEvent
+}
+
+/** 브리지 위를 오가는 모든 메시지. 한 프레임에 이 객체 **하나**다. */
+export type AvatarBridgeMessage =
+  | AvatarHello
+  | AvatarHelloAck
+  | AvatarCommandEnvelope
+  | AvatarEventEnvelope
+
 // ─────────────────────── 에이전트 백엔드 이벤트 ───────────────────────
 
 export type BackendErrorKind = 'rate-limit' | 'auth' | 'not-found' | 'unknown'
@@ -277,6 +351,29 @@ export interface WaifuConfig {
     swayStrength: number
     /** 유휴 시 스스로 둘러보거나 기지개를 켜는 행동. */
     ambientMotion: boolean
+    /**
+     * 아바타를 무엇이 그리는가.
+     *
+     * 이관 기간 동안 둘을 **병행**시키기 위한 스위치다. Unity 셸이 아직 못 하는 게
+     * 남아 있는 동안 기존 렌더러를 지우면 되돌아갈 곳이 없어진다.
+     */
+    renderer: 'renderer' | 'unity'
+  }
+  unity: {
+    /**
+     * Unity 플레이어 실행 파일. 비어 있으면 Unity 셸을 띄우지 않는다.
+     * 개발 중에는 빌드한 플레이어를 직접 가리킨다.
+     */
+    playerPath: string
+    /**
+     * 비정상 종료 시 재시작 시도 횟수 상한.
+     *
+     * 무한 재시작은 죽은 셸을 계속 되살리며 로그만 채운다. 상한에 닿으면
+     * 포기하고 사용자에게 알린다 — 조용히 멈추면 아바타가 왜 없는지 알 수 없다.
+     */
+    maxRestarts: number
+    /** 이 시간 안에 핸드셰이크가 안 오면 실패로 본다. */
+    launchTimeoutMs: number
   }
   chat: {
     /** 자막이 화면에 머무는 최소 시간(ms). 긴 말은 글자 수에 비례해 늘어난다. */
@@ -367,7 +464,13 @@ export const DEFAULT_CONFIG: WaifuConfig = {
     alwaysOnTop: true,
     hitAlpha: 8,
     swayStrength: 1,
-    ambientMotion: true
+    ambientMotion: true,
+    renderer: 'renderer'
+  },
+  unity: {
+    playerPath: '',
+    maxRestarts: 3,
+    launchTimeoutMs: 20000
   },
   chat: {
     subtitleMinMs: 2500,

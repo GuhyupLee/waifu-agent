@@ -19,6 +19,7 @@ import { stopActiveWhispers, transcribe } from './voice/stt'
 import { PushToTalkHotkey } from './voice/hotkey'
 import { pingEngine } from './voice/tts'
 import { DiscordBot } from './discord/bot'
+import { UnityAvatarShell } from './avatar/shell'
 import type { PermissionDecision } from '@shared/protocol'
 
 // 둘 다 app 준비 **전에** 걸어야 한다. 준비 후에 부르면 조용히 무시된다.
@@ -464,6 +465,74 @@ function createWindows(config: WaifuConfig): void {
 
 let gazeTimer: NodeJS.Timeout | null = null
 let waifu: Waifu | null = null
+let unityShell: UnityAvatarShell | null = null
+
+/**
+ * Unity 셸이 올린 이벤트.
+ *
+ * **렌더러용 `IPC.avatarEvent` 핸들러를 재사용하지 않는다.** 저쪽은 Electron 아바타
+ * 창을 직접 조작한다 (클릭 통과 토글, setBounds). Unity 는 자기 창을 스스로 관리하므로
+ * 같은 코드를 태우면 존재하지도 않는 창을 만지려 든다.
+ *
+ * Phase 1 은 연결이 살아 있다는 것을 눈으로 확인하는 데까지다.
+ * 에이전트 턴과 잇는 것(clicked -> 대화 시작 등)은 Phase 2 다.
+ */
+function handleUnityEvent(event: AvatarEvent): void {
+  switch (event.type) {
+    case 'model-loaded':
+      if (event.ok) {
+        process.stdout.write(
+          `[unity] 모델 로드 성공 (표정 ${event.presets.length}종, 시선 ${event.hasLookAt ? '있음' : '없음'})\n`
+        )
+      } else {
+        process.stderr.write(`[unity] 모델 로드 실패: ${event.error}\n`)
+        panelWindow?.webContents.send(IPC.panelEvent, {
+          type: 'notice',
+          level: 'error',
+          message: `아바타 모델을 불러오지 못했다: ${event.error}`
+        })
+      }
+      break
+
+    case 'clicked':
+      process.stdout.write('[unity] 아바타 클릭\n')
+      break
+
+    case 'speech-end':
+      process.stdout.write(`[unity] 발화 종료 ${event.id}\n`)
+      break
+
+    // hover 와 fps 는 초당 여러 번 온다. 로그로 흘리면 다른 것이 안 보인다.
+    case 'hover':
+    case 'fps':
+      break
+
+    default:
+      break
+  }
+}
+
+/**
+ * Unity Avatar Shell 을 띄운다. `avatar.renderer` 가 'unity' 일 때만 동작한다.
+ *
+ * 실패해도 앱을 멈추지 않는다 — 셸이 없어도 에이전트는 계속 일할 수 있어야 하고,
+ * 채팅 패널은 그대로 쓸 수 있다. 다만 **조용히 넘어가지는 않는다.**
+ */
+async function startUnityShell(config: WaifuConfig): Promise<void> {
+  unityShell = new UnityAvatarShell(config, {
+    onEvent: (event) => handleUnityEvent(event),
+    notify: (level, message) => {
+      const stream = level === 'error' ? process.stderr : process.stdout
+      stream.write(`[unity] ${message}\n`)
+      if (level !== 'info') panelWindow?.webContents.send(IPC.panelEvent, { type: 'notice', level, message })
+    }
+  })
+  try {
+    await unityShell.start()
+  } catch (err) {
+    process.stderr.write(`[unity] 셸 시작 실패: ${String(err)}\n`)
+  }
+}
 
 void app.whenReady().then(async () => {
   handleAssetProtocol()
@@ -516,6 +585,7 @@ void app.whenReady().then(async () => {
 
   registerPowerHandlers()
   startDiscord(config)
+  await startUnityShell(config)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindows(loadConfig())
@@ -530,6 +600,10 @@ app.on('before-quit', () => {
   stopActiveWhispers()
   discord?.stop()
   void waifu?.stop()
+  // before-quit 은 비동기를 기다려주지 않는다. 그래도 여기서 kill 을 쏘는 것과
+  // Unity 가 브리지 단절을 보고 스스로 끝내는 것, 두 겹이면 고아가 남지 않는다.
+  // Electron 이 크래시하면 이 줄은 아예 실행되지 않으므로 저쪽 자폭이 진짜 안전망이다.
+  void unityShell?.stop()
 })
 
 app.on('window-all-closed', () => {
