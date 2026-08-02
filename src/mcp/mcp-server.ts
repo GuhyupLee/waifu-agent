@@ -167,6 +167,65 @@ server.registerTool(
   async (args) => call('task_note', args as Record<string, unknown>)
 )
 
+/** 이미지를 돌려주는 툴은 content 모양이 다르다. */
+async function callForImage(
+  tool: Parameters<ControlClient['call']>[0],
+  args: Record<string, unknown>
+): Promise<
+  | { content: [{ type: 'image'; data: string; mimeType: string }]; isError?: undefined }
+  | { content: [{ type: 'text'; text: string }]; isError: true }
+> {
+  if (!control) {
+    return { content: [{ type: 'text', text: '와이프 앱에 연결할 수 없다.' }], isError: true }
+  }
+  try {
+    // 사용자가 승인 카드를 눌러야 넘어오므로 넉넉히 기다린다.
+    const result = (await control.call(tool, args, 5 * 60_000)) as {
+      data?: string
+      mimeType?: string
+      text?: string
+    }
+    if (result?.data && result.mimeType) {
+      return { content: [{ type: 'image', data: result.data, mimeType: result.mimeType }] }
+    }
+    return {
+      content: [{ type: 'text', text: result?.text ?? '보여줄 것이 없다.' }],
+      isError: true
+    }
+  } catch (err) {
+    return { content: [{ type: 'text', text: `실패: ${(err as Error).message}` }], isError: true }
+  }
+}
+
+server.registerTool(
+  'look_at_screen',
+  {
+    title: '화면 보기',
+    description:
+      '지금 화면을 한 장 떠서 본다. 사용자가 "이거 봐줘", "이 오류 뭐야" 처럼 화면에 있는 것을 ' +
+      '물을 때 쓴다. 사용자 승인이 필요하고, 한 장만 넘어온다 — 화면을 계속 지켜보는 것이 아니다. ' +
+      '화면 전체가 넘어가므로, 사용자가 일부만 보여주고 싶어 하면 잘라서 복사한 뒤 ' +
+      'read_clipboard 를 쓰라고 안내해라.',
+    inputSchema: {}
+  },
+  async () => callForImage('look_at_screen', {})
+)
+
+server.registerTool(
+  'read_clipboard',
+  {
+    title: '클립보드 보기',
+    description:
+      '사용자가 복사해둔 것을 읽는다. 텍스트면 그대로, 이미지면 그림으로 온다. ' +
+      '화면 일부만 잘라 보여주는 흐름이라 전체 화면보다 개인정보 노출이 적다.',
+    inputSchema: {}
+  },
+  async () => {
+    const r = await callForImage('read_clipboard', {})
+    return r
+  }
+)
+
 server.registerTool(
   'remind_me',
   {

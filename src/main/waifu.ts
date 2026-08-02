@@ -33,6 +33,7 @@ import {
 import type { RoamHandle } from './roaming'
 import { ReminderStore, resolveReminderTime } from './reminders/store'
 import { isQuiet, quietEndsAt } from './reminders/quietHours'
+import { captureScreen, readClipboardImage, readClipboardText } from './capture'
 import type { PermissionMode } from '@shared/protocol'
 import {
   extractCommand,
@@ -334,6 +335,23 @@ export class Waifu {
         })
         return 'ok'
 
+      case 'look_at_screen': {
+        // 화면 전체가 넘어간다. 자동 승인 목록과 무관하게 항상 물어본다 —
+        // 여기 찍히는 것이 무엇일지 사용자만 안다.
+        const ok = await this.confirmSensitive('화면을 한 장 보여줄까?', 'look_at_screen')
+        if (!ok) return { text: '사용자가 거절했다.' }
+        return captureScreen()
+      }
+
+      case 'read_clipboard': {
+        const ok = await this.confirmSensitive('클립보드 내용을 보여줄까?', 'read_clipboard')
+        if (!ok) return { text: '사용자가 거절했다.' }
+        const image = readClipboardImage()
+        if (image) return image
+        const text = readClipboardText()
+        return { text: text ?? '클립보드가 비어 있다.' }
+      }
+
       case 'remind_me': {
         const at = resolveReminderTime(args)
         const r = this.reminders.create({
@@ -470,6 +488,25 @@ export class Waifu {
       this.toAvatar(cmd)
       return `ok (음성 합성 실패로 자막만 띄웠다: ${(err as Error).message})`
     }
+  }
+
+  /**
+   * 민감한 것을 넘기기 전에 반드시 묻는다.
+   *
+   * `autoApprove` 목록이나 '맡겨두기' 모드와 **무관하게** 물어본다. 화면과 클립보드에
+   * 무엇이 찍혀 있을지는 사용자만 안다. 편의를 위해 이걸 자동으로 통과시키면
+   * 그 순간 이 기능은 상시 감시가 된다.
+   */
+  private confirmSensitive(question: string, toolName: string): Promise<boolean> {
+    const id = randomUUID()
+    return new Promise<boolean>((resolve) => {
+      this.pending.set(id, (d) => resolve(d.behavior === 'allow'))
+      this.toPanel({
+        type: 'permission-request',
+        request: { id, toolName, input: null, reason: question }
+      })
+      this.panel()?.show()
+    })
   }
 
   /**

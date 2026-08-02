@@ -366,7 +366,10 @@ export const WAIFU_TOOLS = [
   /** 시간이 되면 먼저 말을 걸도록 예약한다. */
   'remind_me',
   'reminder_list',
-  'reminder_cancel'
+  'reminder_cancel',
+  /** "이거 봐줘" — 사용자가 보여주는 화면이나 클립보드를 본다. */
+  'look_at_screen',
+  'read_clipboard'
 ] as const
 
 export type WaifuToolName = (typeof WAIFU_TOOLS)[number]
