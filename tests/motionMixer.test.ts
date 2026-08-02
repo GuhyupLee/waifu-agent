@@ -4,6 +4,7 @@ import { VrmScene } from '../src/renderer/avatar/scene'
 import type { MotionRole } from '../src/renderer/avatar/motionTransitions'
 
 interface MotionHarness {
+  root: THREE.Object3D
   mixer: THREE.AnimationMixer
   clips: Map<string, THREE.AnimationClip>
   currentAction: THREE.AnimationAction | null
@@ -12,13 +13,19 @@ interface MotionHarness {
   currentMotionRole: MotionRole | null
   resumeMotion: { name: string; loop: boolean; time: number } | null
   ambientRemaining: number
-  lookAtResumeRemaining: number
+  cursorLookWeight: number
+  cursorLookFrom: number
+  cursorLookTo: number
+  cursorLookElapsed: number
+  cursorLookDuration: number
   lastSwitchMixerTime: number
   pendingMotionRequest: { name: string; loop: boolean } | null
-  retiringActions: Map<THREE.AnimationAction, number>
+  actionWeights: Map<THREE.AnimationAction, number>
+  motionBlend: unknown
   dragGrip: THREE.Object3D | null
   vrm: null
   switchMotion(name: string, loop: boolean, reason: 'request' | 'ambient' | 'restore'): boolean
+  advanceMotionBlend(delta: number): void
   updateMotionDirector(delta: number): void
   handleMotionFinished(action: THREE.AnimationAction): void
   playMotion(name: string, loop: boolean): boolean
@@ -40,6 +47,7 @@ function createHarness(entries: Array<[string, THREE.AnimationClip]>): MotionHar
   const mixer = new THREE.AnimationMixer(root)
   const scene = Object.create(VrmScene.prototype) as MotionHarness
   Object.assign(scene, {
+    root,
     mixer,
     clips: new Map(entries),
     currentAction: null,
@@ -48,10 +56,15 @@ function createHarness(entries: Array<[string, THREE.AnimationClip]>): MotionHar
     currentMotionRole: null,
     resumeMotion: null,
     ambientRemaining: 0,
-    lookAtResumeRemaining: 0,
+    cursorLookWeight: 1,
+    cursorLookFrom: 1,
+    cursorLookTo: 1,
+    cursorLookElapsed: 0,
+    cursorLookDuration: 0,
     lastSwitchMixerTime: Number.NaN,
     pendingMotionRequest: null,
-    retiringActions: new Map<THREE.AnimationAction, number>(),
+    actionWeights: new Map<THREE.AnimationAction, number>(),
+    motionBlend: null,
     dragGrip: null,
     vrm: null
   })
@@ -75,13 +88,21 @@ describe('VrmScene motion mixer integration', () => {
     expect(scene.currentMotionName).toBe('B')
     expect(scene.pendingMotionRequest).toEqual({ name: 'C', loop: false })
 
+    scene.advanceMotionBlend(0.01)
     scene.mixer.update(0.01)
+    const beforeC = scene.root.position.x
     scene.updateMotionDirector(0.01)
 
     expect(scene.currentMotionName).toBe('C')
     expect(scene.pendingMotionRequest).toBeNull()
     const b = scene.mixer.clipAction(scene.clips.get('B')!)
     expect(b.getEffectiveWeight()).toBeLessThan(0.1)
+    expect([...scene.actionWeights.values()].reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 8)
+
+    scene.advanceMotionBlend(0.01)
+    scene.mixer.update(0.01)
+    expect(Math.abs(scene.root.position.x - beforeC)).toBeLessThan(0.1)
+    expect([...scene.actionWeights.values()].reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 8)
   })
 
   it('returns a finished one-shot to the previous ambient loop and phase', () => {
@@ -93,6 +114,7 @@ describe('VrmScene motion mixer integration', () => {
     expect(scene.switchMotion('idle-breathe', true, 'ambient')).toBe(true)
     scene.mixer.update(0.1)
     expect(scene.switchMotion('wave-right', false, 'request')).toBe(true)
+    scene.advanceMotionBlend(0.6)
     scene.mixer.update(0.6)
 
     expect(scene.currentMotionName).toBe('idle-breathe')

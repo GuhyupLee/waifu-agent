@@ -279,6 +279,15 @@ export interface WaifuConfig {
    * 이건 **외부에서 내 PC 를 조종하는 입구**다. 토큰이 없거나 허용 목록이 비어 있으면
    * 아예 켜지지 않는다 — 실수로 열어두는 쪽보다 안 켜지는 쪽이 낫다.
    */
+  /** 먼저 말을 거는 것에 대한 규칙. */
+  notify: {
+    /**
+     * 이 시간대에는 먼저 말을 걸지 않는다. 걸린 알림은 버리지 않고 창이 끝날 때까지 미룬다.
+     * from 과 to 가 같으면 방해 금지가 없다. "HH:MM".
+     */
+    quietFrom: string
+    quietTo: string
+  }
   discord: {
     enabled: boolean
     /** 봇 토큰. 사용자가 Discord 개발자 포털에서 발급한다. */
@@ -327,6 +336,7 @@ export const DEFAULT_CONFIG: WaifuConfig = {
     instructions: '',
     subtitleLang: 'ko'
   },
+  notify: { quietFrom: '23:00', quietTo: '08:00' },
   discord: {
     enabled: false,
     token: '',
@@ -352,7 +362,11 @@ export const WAIFU_TOOLS = [
   /** 다른 작업들의 상태를 본다. */
   'task_list',
   /** 아바타를 다른 모니터로 옮긴다. */
-  'waifu_move'
+  'waifu_move',
+  /** 시간이 되면 먼저 말을 걸도록 예약한다. */
+  'remind_me',
+  'reminder_list',
+  'reminder_cancel'
 ] as const
 
 export type WaifuToolName = (typeof WAIFU_TOOLS)[number]

@@ -31,6 +31,8 @@ import {
   roamTo
 } from './roaming'
 import type { RoamHandle } from './roaming'
+import { ReminderStore, resolveReminderTime } from './reminders/store'
+import { isQuiet, quietEndsAt } from './reminders/quietHours'
 import type { PermissionMode } from '@shared/protocol'
 import {
   extractCommand,
@@ -67,6 +69,8 @@ export class Waifu {
   private readonly snapshots = new SnapshotStore()
   /** 진행 중인 이동. 새 이동이 들어오면 취소한다 — 겹치면 창이 떨린다. */
   private roaming: RoamHandle | null = null
+  private readonly reminders = new ReminderStore()
+  private reminderTimer: NodeJS.Timeout | null = null
   /** 지금 턴이 속한 작업. 에이전트의 task_* 툴은 이걸 대상으로 한다. */
   private current: Task | null = null
 
@@ -85,7 +89,44 @@ export class Waifu {
     await this.control.start()
     this.cwd = cwd
     await this.startBackend()
+    // 30초면 분 단위 알림에 충분하고, 켜둬도 부담이 없다.
+    this.reminderTimer = setInterval(() => this.fireDueReminders(), 30_000)
+    this.fireDueReminders()
   }
+
+  /**
+   * 울릴 때가 된 알림을 처리한다.
+   *
+   * 방해 금지 시간에 걸리면 **버리지 않고 미룬다.** 알림을 놓치는 것과 새벽에 깨우는 것
+   * 둘 다 피해야 한다. 아침에 밀린 것이 한 번에 오는 편이 낫다.
+   */
+  private fireDueReminders(): void {
+    const now = new Date()
+    const quiet = { from: this.config.notify.quietFrom, to: this.config.notify.quietTo }
+
+    for (const r of this.reminders.due(now.getTime())) {
+      if (isQuiet(now, quiet)) {
+        const until = quietEndsAt(now, quiet)
+        if (until) {
+          this.reminders.postpone(r.id, until)
+          continue
+        }
+      }
+
+      this.reminders.markFired(r.id, now.getTime())
+
+      if (r.channel !== 'discord') {
+        this.toAvatar({ type: 'say', id: r.id, text: r.text, emotion: 'happy' })
+        this.toPanel({ type: 'notice', level: 'info', message: `⏰ ${r.text}` })
+      }
+      if (r.channel !== 'desktop') this.onRemoteReport?.(`⏰ ${r.text}`)
+
+      if (r.taskId) this.tasks.append(r.taskId, 'note', `알림 울림: ${r.text}`)
+    }
+  }
+
+  /** Discord 로 먼저 연락할 때 쓰는 통로. index.ts 가 꽂아준다. */
+  onRemoteReport: ((text: string) => void) | null = null
 
   private async startBackend(resumeSessionId?: string): Promise<void> {
     const mcp = mcpLaunchSpec()
@@ -249,9 +290,11 @@ export class Waifu {
   async stop(): Promise<void> {
     await this.backend.stop()
     await this.control.stop()
+    if (this.reminderTimer) clearInterval(this.reminderTimer)
     this.memory.close()
     this.tasks.close()
     this.snapshots.close()
+    this.reminders.close()
   }
 
   /** 되돌리기 UI 용. 최근에 바뀐 파일들. */
@@ -290,6 +333,34 @@ export class Waifu {
           ...(typeof args.loop === 'boolean' ? { loop: args.loop } : {})
         })
         return 'ok'
+
+      case 'remind_me': {
+        const at = resolveReminderTime(args)
+        const r = this.reminders.create({
+          text: String(args.text ?? ''),
+          dueAt: at,
+          repeat: (args.repeat as 'none' | 'daily' | 'weekly' | undefined) ?? 'none',
+          channel: (args.channel as 'desktop' | 'discord' | 'both' | undefined) ?? 'desktop',
+          taskId: this.current?.id ?? null
+        })
+        // 해석된 시각을 그대로 돌려준다. 에이전트가 "3시에 알려줄게" 라고 말한 것과
+        // 실제 예약이 어긋나면 사용자는 알림이 안 온 뒤에야 알게 된다.
+        return `${new Date(r.dueAt).toLocaleString()} 에 알리도록 예약했다 (id: ${r.id})`
+      }
+
+      case 'reminder_list': {
+        const list = this.reminders.upcoming()
+        if (list.length === 0) return '예약된 알림이 없다.'
+        return list
+          .map(
+            (r) =>
+              `- ${new Date(r.dueAt).toLocaleString()}${r.repeat === 'none' ? '' : ` (${r.repeat})`}: ${r.text} [id: ${r.id}]`
+          )
+          .join('\n')
+      }
+
+      case 'reminder_cancel':
+        return this.reminders.cancel(String(args.id ?? '')) ? '취소했다.' : '그런 알림이 없다.'
 
       case 'waifu_move': {
         const to = String(args.to ?? 'cursor')

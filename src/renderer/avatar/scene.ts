@@ -58,6 +58,13 @@ interface PendingMotionRequest {
   loop: boolean
 }
 
+interface MotionBlendState {
+  sources: Map<THREE.AnimationAction, number>
+  target: THREE.AnimationAction
+  elapsed: number
+  duration: number
+}
+
 type MotionStartReason = 'request' | 'ambient' | 'interactive' | 'restore'
 
 export class VrmScene {
@@ -67,6 +74,8 @@ export class VrmScene {
   private readonly clock = new THREE.Clock()
 
   private vrm: VRM | null = null
+  /** 늦게 끝난 이전 모델/모션 load가 최신 모델 상태를 덮지 못하게 하는 세대 번호. */
+  private modelLoadGeneration = 0
   /** 모델을 담는 피벗. 머리 위 한 점을 원점으로 삼아 여기서 흔든다. */
   private hanger: THREE.Group | null = null
   private hangerRestY = 0
@@ -79,12 +88,17 @@ export class VrmScene {
   /** 단발 동작이 끝난 뒤 이어서 재생할 이전 반복 동작. */
   private resumeMotion: MotionSnapshot | null = null
   private ambientRemaining = 0
-  private lookAtResumeRemaining = 0
+  private cursorLookWeight = 1
+  private cursorLookFrom = 1
+  private cursorLookTo = 1
+  private cursorLookElapsed = 0
+  private cursorLookDuration = 0
   private lastSwitchMixerTime = Number.NaN
   /** 같은 mixer tick의 요청은 중간 포즈를 만들지 않고 마지막 하나만 다음 tick에 실행한다. */
   private pendingMotionRequest: PendingMotionRequest | null = null
-  /** fade가 끝난 action만 stop하여 급한 연속 전환에서도 weight가 튀지 않게 한다. */
-  private readonly retiringActions = new Map<THREE.AnimationAction, number>()
+  /** 활성 action 가중치 합을 항상 1로 유지해 원본 T-pose가 틈새에 섞이지 않게 한다. */
+  private readonly actionWeights = new Map<THREE.AnimationAction, number>()
+  private motionBlend: MotionBlendState | null = null
   private readonly clips = new Map<string, THREE.AnimationClip>()
 
   /**
@@ -103,6 +117,7 @@ export class VrmScene {
 
   /** 시선 타깃. 카메라 자식으로 붙여야 화면 좌표를 그대로 쓸 수 있다. */
   private readonly lookTarget = new THREE.Object3D()
+  private readonly lookTargetWorld = new THREE.Vector3()
   readonly hang = new HangPhysics()
 
   private emotion: Emotion = 'neutral'
@@ -157,13 +172,18 @@ export class VrmScene {
     this.resize()
   }
 
-  async loadVRM(url: string): Promise<LoadResult> {
+  async loadVRM(url: string): Promise<LoadResult | null> {
+    const generation = ++this.modelLoadGeneration
     const loader = new GLTFLoader()
     loader.register((parser) => new VRMLoaderPlugin(parser))
 
     const gltf = await loader.loadAsync(url)
     // 평범한 .glb 나 손상된 .vrm 도 promise 는 성공으로 끝난다. userData.vrm 이 없을 뿐이다.
     const vrm = gltf.userData.vrm as VRM | undefined
+    if (generation !== this.modelLoadGeneration) {
+      if (vrm) VRMUtils.deepDispose(vrm.scene)
+      return null
+    }
     if (!vrm) throw new Error('VRM 데이터가 없다 (meta/humanoid 파싱 실패이거나 일반 glTF)')
 
     this.disposeVrm()
@@ -233,10 +253,14 @@ export class VrmScene {
   async loadMotion(name: string, url: string): Promise<void> {
     const vrm = this.vrm
     if (!vrm) throw new Error('모션을 붙이려면 VRM 이 먼저 로드되어야 한다')
+    const generation = this.modelLoadGeneration
 
     const loader = new GLTFLoader()
     loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
     const gltf = await loader.loadAsync(url)
+
+    // 구 모델 기준 normalized track을 새 mixer에 넣으면 target 없는 action이 idle까지 막는다.
+    if (generation !== this.modelLoadGeneration || this.vrm !== vrm) return
 
     const animations = gltf.userData.vrmAnimations as unknown[] | undefined
     const first = animations?.[0]
@@ -277,17 +301,22 @@ export class VrmScene {
   }
 
   stopMotion(): void {
-    const previous = this.currentAction
-    if (previous) this.retireAction(previous, 0.32)
+    this.mixer?.stopAllAction()
+    this.actionWeights.clear()
+    this.motionBlend = null
     this.currentAction = null
     this.currentMotionName = null
     this.currentMotionLoop = false
     this.currentMotionRole = null
     this.resumeMotion = null
     this.ambientRemaining = 0
-    this.lookAtResumeRemaining = 0
+    this.cursorLookWeight = 1
+    this.cursorLookFrom = 1
+    this.cursorLookTo = 1
+    this.cursorLookElapsed = 0
+    this.cursorLookDuration = 0
     this.pendingMotionRequest = null
-    if (!previous && this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
+    if (this.vrm?.lookAt) this.vrm.lookAt.autoUpdate = true
   }
 
   private queueMotionAfterDrag(name: string, loop: boolean): void {
@@ -311,16 +340,10 @@ export class VrmScene {
     const mixer = this.mixer
     if (!clip || !mixer) return false
 
-    // play/fade 호출 직후에는 getEffectiveWeight()가 아직 이전 캐시(대개 1)를 돌려준다.
-    // 같은 tick의 일반 요청을 전부 실행하면 A/B/C가 동시에 weight 1로 튀므로 latest만 보류한다.
+    // 같은 tick의 일반 요청은 화면에 나타난 적 없는 중간 포즈를 만들지 않고 latest만 보류한다.
     if (reason === 'request' && this.lastSwitchMixerTime === mixer.time) {
       this.pendingMotionRequest = { name, loop }
       return true
-    }
-    if (reason === 'interactive' && this.lastSwitchMixerTime === mixer.time) {
-      // 포인터 제약은 다음 프레임으로 미룰 수 없다. delta=0 평가로 방금 예약된 fade의
-      // 실제 weight만 동기화한 뒤 tether가 현재 보이는 포즈에서 출발하게 한다.
-      mixer.update(0)
     }
 
     const previous = this.currentAction
@@ -356,23 +379,23 @@ export class VrmScene {
       }
     }
 
-    this.retiringActions.delete(next)
+    const wasActive = this.actionWeights.has(next)
+    const restartFinishedSource = wasActive && next.paused && reason === 'request'
+    if (!wasActive || restartFinishedSource) next.reset()
     next
-      .reset()
       .stopFading()
       .setEffectiveTimeScale(1)
-      .setEffectiveWeight(1)
       .setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+    next.enabled = true
+    next.paused = false
     next.clampWhenFinished = !loop
-    if (clip.duration > 0) {
+    if ((!wasActive || restartFinishedSource) && clip.duration > 0) {
       next.time = loop
         ? ((nextTime % clip.duration) + clip.duration) % clip.duration
         : Math.max(0, Math.min(nextTime, Math.max(0, clip.duration - 1e-4)))
     }
-
-    if (previous && previous !== next) this.retireAction(previous, blendSeconds)
-    if (previous && previous !== next && blendSeconds > 0) next.fadeIn(blendSeconds)
     next.play()
+    this.beginMotionBlend(next, blendSeconds)
 
     this.currentAction = next
     this.currentMotionName = name
@@ -382,11 +405,11 @@ export class VrmScene {
     this.ambientRemaining =
       nextRole === 'ambient' ? ambientHoldSeconds(Math.random()) : Number.POSITIVE_INFINITY
 
-    // 생활 idle에서는 커서 시선을 살리고, 의미 있는 동작의 VRMA 시선 트랙은 보존한다.
+    // 생활 idle은 커서를 보고, 의미 있는 동작은 authored 시선을 쓴다. boolean으로 즉시
+    // 바꾸면 눈이 한 프레임에 튀므로 모션 crossfade와 같은 시간축으로 yaw/pitch를 섞는다.
     if (this.vrm?.lookAt) {
-      const recoveringToAmbient = nextRole === 'ambient' && previousRole !== null && previousRole !== 'ambient'
-      this.lookAtResumeRemaining = recoveringToAmbient ? blendSeconds : 0
-      this.vrm.lookAt.autoUpdate = nextRole === 'ambient' && !recoveringToAmbient
+      this.beginCursorLookBlend(nextRole === 'ambient' ? 1 : 0, blendSeconds)
+      this.vrm.lookAt.autoUpdate = false
     }
     return true
   }
@@ -400,16 +423,103 @@ export class VrmScene {
     }
   }
 
-  private retireAction(action: THREE.AnimationAction, seconds: number): void {
-    const currentWeight = action.getEffectiveWeight()
-    action.stopFading().setEffectiveWeight(currentWeight)
-    if (seconds <= 0 || currentWeight <= 1e-4) {
-      action.stop()
-      this.retiringActions.delete(action)
+  private beginMotionBlend(target: THREE.AnimationAction, duration: number): void {
+    const sources = new Map(this.actionWeights)
+    if (sources.size === 0 && this.currentAction && this.currentAction !== target) {
+      sources.set(this.currentAction, 1)
+    }
+
+    let total = 0
+    for (const weight of sources.values()) total += Math.max(0, weight)
+    if (total > 1e-8) {
+      for (const [action, weight] of sources) sources.set(action, Math.max(0, weight) / total)
+    } else {
+      sources.clear()
+    }
+
+    if (duration <= 0 || sources.size === 0) {
+      for (const action of this.actionWeights.keys()) {
+        if (action !== target) action.stop()
+      }
+      target.setEffectiveWeight(1)
+      this.actionWeights.clear()
+      this.actionWeights.set(target, 1)
+      this.motionBlend = null
       return
     }
-    action.fadeOut(seconds)
-    this.retiringActions.set(action, seconds)
+
+    if (!sources.has(target)) target.setEffectiveWeight(0)
+    this.motionBlend = { sources, target, elapsed: 0, duration }
+    this.applyMotionBlendWeights(0)
+  }
+
+  /**
+   * source 합 (1-ease) + target ease 구조라 중간에 다시 전환해도 전체 weight 합은 항상 1이다.
+   * Three의 독립 fadeIn/fadeOut처럼 남는 비율을 원본(rest/T-pose)으로 채우지 않는다.
+   */
+  private applyMotionBlendWeights(ease: number): void {
+    const blend = this.motionBlend
+    if (!blend) return
+    const weights = new Map<THREE.AnimationAction, number>()
+    for (const [action, sourceWeight] of blend.sources) {
+      weights.set(action, sourceWeight * (1 - ease))
+    }
+    weights.set(blend.target, (weights.get(blend.target) ?? 0) + ease)
+
+    this.actionWeights.clear()
+    for (const [action, weight] of weights) {
+      action.setEffectiveWeight(weight)
+      this.actionWeights.set(action, weight)
+    }
+  }
+
+  private advanceMotionBlend(delta: number): void {
+    const blend = this.motionBlend
+    if (!blend) return
+    blend.elapsed = Math.min(blend.duration, blend.elapsed + delta)
+    const t = blend.duration > 0 ? blend.elapsed / blend.duration : 1
+    const ease = t * t * (3 - 2 * t)
+    this.applyMotionBlendWeights(ease)
+
+    if (t >= 1) {
+      for (const action of blend.sources.keys()) {
+        if (action !== blend.target) action.stop()
+      }
+      blend.target.setEffectiveWeight(1)
+      this.actionWeights.clear()
+      this.actionWeights.set(blend.target, 1)
+      this.motionBlend = null
+    }
+  }
+
+  private beginCursorLookBlend(target: number, duration: number): void {
+    this.cursorLookFrom = this.cursorLookWeight
+    this.cursorLookTo = target
+    this.cursorLookElapsed = 0
+    this.cursorLookDuration = duration
+    if (duration <= 0) this.cursorLookWeight = target
+  }
+
+  private advanceCursorLookBlend(delta: number): void {
+    if (this.cursorLookDuration <= 0 || this.cursorLookWeight === this.cursorLookTo) return
+    this.cursorLookElapsed = Math.min(this.cursorLookDuration, this.cursorLookElapsed + delta)
+    const t = this.cursorLookElapsed / this.cursorLookDuration
+    const ease = t * t * (3 - 2 * t)
+    this.cursorLookWeight = THREE.MathUtils.lerp(this.cursorLookFrom, this.cursorLookTo, ease)
+  }
+
+  /** VRMA proxy가 기록한 authored yaw/pitch와 현재 커서 목표를 연속적으로 보간한다. */
+  private applyCursorLookBlend(): void {
+    const lookAt = this.vrm?.lookAt
+    if (!lookAt || !this.currentAction || this.cursorLookWeight <= 0) return
+
+    const authoredYaw = lookAt.yaw
+    const authoredPitch = lookAt.pitch
+    lookAt.lookAt(this.lookTarget.getWorldPosition(this.lookTargetWorld))
+    const cursorYaw = lookAt.yaw
+    const cursorPitch = lookAt.pitch
+    lookAt.yaw = THREE.MathUtils.lerp(authoredYaw, cursorYaw, this.cursorLookWeight)
+    lookAt.pitch = THREE.MathUtils.lerp(authoredPitch, cursorPitch, this.cursorLookWeight)
   }
 
   private handleMotionFinished(action: THREE.AnimationAction): void {
@@ -445,27 +555,6 @@ export class VrmScene {
       this.switchMotion(pending.name, pending.loop, 'request')
     }
 
-    for (const [action, remaining] of this.retiringActions) {
-      if (action === this.currentAction) {
-        this.retiringActions.delete(action)
-        continue
-      }
-      const nextRemaining = remaining - delta
-      if (nextRemaining <= 0) {
-        action.stop()
-        this.retiringActions.delete(action)
-      } else {
-        this.retiringActions.set(action, nextRemaining)
-      }
-    }
-
-    if (this.lookAtResumeRemaining > 0) {
-      this.lookAtResumeRemaining -= delta
-      if (this.lookAtResumeRemaining <= 0 && this.currentMotionRole === 'ambient' && this.vrm?.lookAt) {
-        this.vrm.lookAt.autoUpdate = true
-      }
-    }
-
     if (this.currentMotionRole === 'ambient' && !this.dragGrip) {
       this.ambientRemaining -= delta
       if (this.ambientRemaining <= 0) {
@@ -475,7 +564,7 @@ export class VrmScene {
       }
     }
 
-    if (!this.currentAction && this.retiringActions.size === 0 && this.vrm?.lookAt) {
+    if (!this.currentAction && this.actionWeights.size === 0 && this.vrm?.lookAt) {
       this.vrm.lookAt.autoUpdate = true
     }
   }
@@ -591,10 +680,13 @@ export class VrmScene {
     // 순서가 중요하다. vrm.update 안의 humanoid.update() 가 정규화 본을 실제 본으로
     // 복사하므로, 그 뒤에 정규화 본을 건드리면 그 프레임에서는 조용히 버려진다.
     //   1) 믹서(VRMA)  2) 절차적 보정  3) vrm.update  4) render
+    this.advanceMotionBlend(delta)
+    this.advanceCursorLookBlend(delta)
     this.mixer?.update(delta)
+    this.applyCursorLookBlend()
     this.updateMotionDirector(delta)
     // VRMA 가 도는 동안 여기서 rotation 을 대입하면 믹서 결과를 덮어쓴다.
-    if (!this.currentAction && this.retiringActions.size === 0 && this.vrm?.humanoid) {
+    if (!this.currentAction && this.actionWeights.size === 0 && this.vrm?.humanoid) {
       applyIdlePose(this.vrm.humanoid, {
         elapsed: this.elapsed,
         yaw: this.headYaw,
@@ -757,10 +849,15 @@ export class VrmScene {
     this.currentMotionRole = null
     this.resumeMotion = null
     this.ambientRemaining = 0
-    this.lookAtResumeRemaining = 0
+    this.cursorLookWeight = 1
+    this.cursorLookFrom = 1
+    this.cursorLookTo = 1
+    this.cursorLookElapsed = 0
+    this.cursorLookDuration = 0
     this.lastSwitchMixerTime = Number.NaN
     this.pendingMotionRequest = null
-    this.retiringActions.clear()
+    this.actionWeights.clear()
+    this.motionBlend = null
     this.dragAnchor = null
     this.dragGrip = null
     this.dragOffset.set(0, 0, 0)
@@ -771,6 +868,7 @@ export class VrmScene {
   }
 
   dispose(): void {
+    this.modelLoadGeneration += 1
     this.disposeVrm()
     this.renderer.dispose()
   }

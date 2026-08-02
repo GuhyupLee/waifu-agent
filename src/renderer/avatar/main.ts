@@ -142,6 +142,7 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
     case 'load-model':
       try {
         const r = await scene.loadVRM(cmd.url)
+        if (!r) break
         waifu.sendAvatarEvent({
           type: 'model-loaded',
           ok: true,

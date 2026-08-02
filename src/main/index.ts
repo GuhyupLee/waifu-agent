@@ -169,7 +169,10 @@ function startDiscord(config: WaifuConfig): void {
       waifu.send(text, 'discord', reply)
     }
   })
-  discord.start()
+  if (discord.start() && waifu) {
+    // 알림이 discord 채널로 잡혀 있으면 이 통로로 먼저 연락한다.
+    waifu.onRemoteReport = (text) => void discord?.report(text)
+  }
 }
 
 /**

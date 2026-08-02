@@ -185,6 +185,25 @@ export function Settings({ onClose }: { onClose: () => void }): React.JSX.Elemen
         </div>
       </Section>
 
+      <Section title="먼저 말 걸기">
+        <div style={S.hint}>
+          이 시간대에는 알림이 오지 않는다. 걸린 알림은 버리지 않고 시간이 지나면 온다.
+          두 값이 같으면 방해 금지가 없다.
+        </div>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <Field
+            label="조용히 시작"
+            value={config.notify.quietFrom}
+            onCommit={(v) => patch({ notify: { ...config.notify, quietFrom: v.trim() } })}
+          />
+          <Field
+            label="조용히 끝"
+            value={config.notify.quietTo}
+            onCommit={(v) => patch({ notify: { ...config.notify, quietTo: v.trim() } })}
+          />
+        </div>
+      </Section>
+
       <Section title="Discord 원격">
         <div style={S.hint}>
           밖에서 DM 으로 부탁하고 결과를 받는다. 토큰과 허용 사용자 ID 가 모두 있어야 켜진다.

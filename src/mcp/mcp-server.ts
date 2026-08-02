@@ -168,6 +168,49 @@ server.registerTool(
 )
 
 server.registerTool(
+  'remind_me',
+  {
+    title: '나중에 알려주기',
+    description:
+      '정해진 시각에 먼저 말을 걸도록 예약한다. 사용자가 "이따 알려줘", "매일 아침에 물어봐" ' +
+      '같이 말할 때 쓴다. 시각은 `in_minutes`(지금부터 몇 분 뒤) 또는 `at`(ISO 8601) 중 하나로 준다. ' +
+      '지금 몇 시인지 확실하지 않으면 셸에서 확인한 뒤 계산해라. ' +
+      '응답에 실제로 예약된 시각이 들어오니 사용자에게 그대로 확인해줘라.',
+    inputSchema: {
+      text: z.string().describe('그때 사용자에게 할 말.'),
+      in_minutes: z.number().positive().optional(),
+      at: z.string().optional().describe('ISO 8601. in_minutes 와 둘 중 하나만.'),
+      repeat: z.enum(['none', 'daily', 'weekly']).optional(),
+      channel: z
+        .enum(['desktop', 'discord', 'both'])
+        .optional()
+        .describe('discord 는 밖에 있을 때 받으려는 경우다. 기본은 desktop.')
+    }
+  },
+  async (args) => call('remind_me', args as Record<string, unknown>)
+)
+
+server.registerTool(
+  'reminder_list',
+  {
+    title: '예약된 알림 보기',
+    description: '아직 울리지 않은 알림들을 본다.',
+    inputSchema: {}
+  },
+  async () => call('reminder_list', {})
+)
+
+server.registerTool(
+  'reminder_cancel',
+  {
+    title: '알림 취소',
+    description: 'reminder_list 가 알려준 id 로 예약을 지운다.',
+    inputSchema: { id: z.string() }
+  },
+  async (args) => call('reminder_cancel', args as Record<string, unknown>)
+)
+
+server.registerTool(
   'waifu_move',
   {
     title: '다른 모니터로 이동',

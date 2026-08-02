@@ -47,6 +47,7 @@ function merge(base: WaifuConfig, patch: Partial<WaifuConfig>): WaifuConfig {
     // engineUrl 같은 형제 필드가 사라진다.
     voice: { ...base.voice, ...patch.voice, stt: { ...base.voice.stt, ...patch.voice?.stt } },
     persona: { ...base.persona, ...patch.persona },
+    notify: { ...base.notify, ...patch.notify },
     discord: { ...base.discord, ...patch.discord }
   }
 }
