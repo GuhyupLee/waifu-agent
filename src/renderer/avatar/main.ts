@@ -62,47 +62,70 @@ window.addEventListener('resize', () => scene.resize())
 // screenX/screenY 를 쓰는 이유: 창이 커서를 따라 움직이므로 clientX 는 거의 변하지 않는다.
 
 let dragging = false
+let activePointerId: number | null = null
+let dragDistance = 0
+let suppressNextClick = false
 let lastScreen = { x: 0, y: 0 }
 /** 이번 프레임에 쌓인 이동량. render 에서 물리에 밀어 넣고 비운다. */
 let dragDelta = { x: 0, y: 0 }
 
-canvas.addEventListener('mousedown', (e) => {
+canvas.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return
-  dragging = true
+  activePointerId = e.pointerId
+  dragDistance = 0
   lastScreen = { x: e.screenX, y: e.screenY }
-  scene.hang.grab()
-  scene.beginPointerDrag(e.clientX, e.clientY)
-  waifu.sendAvatarEvent({ type: 'drag-start' })
+  canvas.setPointerCapture(e.pointerId)
 })
 
-window.addEventListener('mousemove', (e) => {
+window.addEventListener('pointermove', (e) => {
   scene.setPointer({ x: e.clientX, y: e.clientY })
-  if (!dragging) return
-  scene.updatePointerDrag(e.clientX, e.clientY)
+  if (e.pointerId !== activePointerId) return
   const dx = e.screenX - lastScreen.x
   const dy = e.screenY - lastScreen.y
   lastScreen = { x: e.screenX, y: e.screenY }
+  dragDistance += Math.abs(dx) + Math.abs(dy)
+
+  // 단순 클릭에는 매달림 포즈를 켜지 않는다. 실제로 움직인 뒤부터 드래그다.
+  if (!dragging && dragDistance >= 4) {
+    dragging = true
+    scene.hang.grab()
+    scene.beginPointerDrag(e.clientX, e.clientY)
+    waifu.sendAvatarEvent({ type: 'drag-start' })
+  }
+  if (!dragging) return
+  scene.updatePointerDrag(e.clientX, e.clientY)
   dragDelta.x += dx
   dragDelta.y += dy
   waifu.sendAvatarEvent({ type: 'drag-move', dx, dy })
 })
 
-// mouseup 은 창 밖에서 떼도 받아야 한다. window 에 걸어둔다.
-window.addEventListener('mouseup', () => {
-  if (!dragging) return
+/** Pointer Capture + cancel/blur 를 한 곳에서 끝내 마우스를 창 밖에서 놓쳐도 고착되지 않게 한다. */
+const finishDrag = (pointerId = activePointerId): void => {
+  if (pointerId == null || pointerId !== activePointerId) return
+  activePointerId = null
+  if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId)
+  const wasDragging = dragging
   dragging = false
-  scene.hang.release()
-  scene.endPointerDrag()
-  waifu.sendAvatarEvent({ type: 'drag-end' })
-})
+  if (wasDragging) {
+    scene.hang.release()
+    scene.endPointerDrag()
+    waifu.sendAvatarEvent({ type: 'drag-end' })
+    suppressNextClick = true
+    window.setTimeout(() => {
+      suppressNextClick = false
+    }, 0)
+  }
+}
+
+window.addEventListener('pointerup', (e) => finishDrag(e.pointerId))
+window.addEventListener('pointercancel', (e) => finishDrag(e.pointerId))
+canvas.addEventListener('lostpointercapture', (e) => finishDrag(e.pointerId))
+window.addEventListener('blur', () => finishDrag())
 
 window.addEventListener('mouseleave', () => scene.setPointer(null))
 
 canvas.addEventListener('click', () => {
-  // 끌어서 옮긴 것과 그냥 클릭한 것을 구분한다. 드래그 끝에 패널이 뜨면 성가시다.
-  if (Math.abs(dragDelta.x) + Math.abs(dragDelta.y) < 4) {
-    waifu.sendAvatarEvent({ type: 'clicked' })
-  }
+  if (!suppressNextClick) waifu.sendAvatarEvent({ type: 'clicked' })
 })
 
 // ─────────────────────── main 명령 처리 ───────────────────────
@@ -187,6 +210,10 @@ async function handleCommand(cmd: AvatarCommand): Promise<void> {
         waifu.sendAvatarEvent({ type: 'recording', on: false })
         waifu.sendAvatarEvent({ type: 'recorded', wavBase64 })
       }
+      break
+
+    case 'wake':
+      scene.wake()
       break
 
     case 'stop-speaking':

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { basename, extname, isAbsolute, join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, powerMonitor, screen } from 'electron'
 import { IPC } from '@shared/protocol'
 import type { AvatarEvent, WaifuConfig } from '@shared/protocol'
 import { applyOverlaySwitches, createAvatarWindow, setAvatarInteractive } from './windows/avatarWindow'
@@ -129,6 +129,22 @@ function registerIpc(): void {
 
 /** 녹음 중인지. 핫키가 토글이라 상태를 들고 있어야 한다. */
 let recording = false
+
+/**
+ * 절전 복귀 처리.
+ *
+ * 자는 동안 사용량 한도가 풀렸을 수 있으므로 깨어나면 확인한다.
+ * 그리고 아바타의 스프링 본을 초기화한다 — 몇 시간치 delta 를 한 번에 적분하면
+ * 머리카락이 날아간다.
+ */
+function registerPowerHandlers(): void {
+  powerMonitor.on('resume', () => {
+    process.stdout.write('[power] 절전에서 복귀\n')
+    waifu?.checkResumable()
+    avatarWindow?.webContents.send(IPC.avatarCommand, { type: 'wake' })
+  })
+  powerMonitor.on('suspend', () => process.stdout.write('[power] 절전 진입\n'))
+}
 
 /**
  * 푸시투토크 핫키를 건다.
@@ -304,9 +320,19 @@ void app.whenReady().then(async () => {
     const cwd = config.permission.workspaces[0] ?? app.getPath('home')
     await waifu.start(cwd)
     process.stdout.write(`[waifu] 백엔드 시작 (cwd=${cwd})\n`)
+
+    const pending = waifu.activeTasks()
+    if (pending.length > 0) {
+      process.stdout.write(`[task] 이어서 할 작업 ${pending.length}개\n`)
+      // 패널이 아직 준비되지 않았을 수 있다. 로드가 끝난 뒤 알린다.
+      panelWindow?.webContents.once('did-finish-load', () => waifu?.reportPendingTasks())
+      if (panelWindow?.webContents.isLoading() === false) waifu.reportPendingTasks()
+    }
   } catch (err) {
     process.stderr.write(`[waifu] 백엔드 시작 실패: ${String(err)}\n`)
   }
+
+  registerPowerHandlers()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindows(loadConfig())

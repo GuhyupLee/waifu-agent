@@ -133,6 +133,50 @@ server.registerTool(
   async (args) => call('recall', args as Record<string, unknown>)
 )
 
+server.registerTool(
+  'task_update',
+  {
+    title: '작업 상태 갱신',
+    description:
+      '지금 하고 있는 작업의 상태를 적는다. 앱을 껐다 켜거나 사용량 한도로 중단됐다가 ' +
+      '이어서 할 때, 여기 적힌 것만이 어디서부터 다시 시작할지 아는 근거가 된다. ' +
+      '오래 걸리는 일은 단계가 바뀔 때마다 갱신해라.',
+    inputSchema: {
+      state: z
+        .enum(['running', 'waiting-user', 'done', 'failed'])
+        .optional()
+        .describe('waiting-user 는 사용자 답을 받아야 진행되는 상태다.'),
+      plan: z.string().optional().describe('지금 무엇을 하는 중인지 한두 문장으로.'),
+      next_action: z.string().optional().describe('이 턴이 끊겨도 다음에 이어서 할 일.'),
+      needs_user: z.string().optional().describe('사용자에게 물어봐야 하는 것. 없으면 빈 문자열.'),
+      title: z.string().optional().describe('작업 이름을 더 정확하게 바꾼다.')
+    }
+  },
+  async (args) => call('task_update', args as Record<string, unknown>)
+)
+
+server.registerTool(
+  'task_note',
+  {
+    title: '작업 기록',
+    description:
+      '작업 저널에 한 줄 남긴다. 나중에 사용자가 "어디까지 했어?" 라고 물으면 이걸로 답한다. ' +
+      '결정한 것, 발견한 것, 건너뛴 것처럼 다시 떠올려야 할 것만 남겨라.',
+    inputSchema: { text: z.string() }
+  },
+  async (args) => call('task_note', args as Record<string, unknown>)
+)
+
+server.registerTool(
+  'task_list',
+  {
+    title: '작업 목록',
+    description: '아직 끝나지 않은 작업들을 본다. 사용자가 진행 상황을 물을 때 쓴다.',
+    inputSchema: {}
+  },
+  async () => call('task_list', {})
+)
+
 async function main(): Promise<void> {
   await server.connect(new StdioServerTransport())
 }

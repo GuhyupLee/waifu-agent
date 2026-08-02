@@ -62,7 +62,8 @@ export class VrmScene {
   private dragGrip: THREE.Object3D | null = null
   private readonly dragOffset = new THREE.Vector3()
   private dragReleaseRemaining = 0
-  private dragRestoreMotion: { name: string; loop: boolean } | null = null
+  private dragRestoreMotion: { name: string; loop: boolean; time: number } | null = null
+  private refitAfterDrag = false
   private readonly dragGripWorld = new THREE.Vector3()
   private readonly dragTargetWorld = new THREE.Vector3()
   private readonly dragProjected = new THREE.Vector3()
@@ -213,9 +214,15 @@ export class VrmScene {
     return [...this.clips.keys()]
   }
 
-  playMotion(name: string, loop: boolean): boolean {
+  playMotion(name: string, loop: boolean, forceDuringDrag = false): boolean {
     const clip = this.clips.get(name)
     if (!clip || !this.mixer) return false
+
+    // 대화 중 새 모션이 와도 손을 놓기 전까지는 tether 를 끊지 않는다. 마지막 요청을 복귀 대상으로 둔다.
+    if (!forceDuringDrag && this.dragGrip && name !== DRAG_MOTION) {
+      this.dragRestoreMotion = { name, loop, time: 0 }
+      return true
+    }
 
     const next = this.mixer.clipAction(clip)
     next.reset()
@@ -250,16 +257,24 @@ export class VrmScene {
     const vrm = this.vrm
     if (!vrm || !this.hanger || !this.clips.has(DRAG_MOTION)) return false
 
+    // vrm.update() 이후 실제 mesh를 움직이는 raw 본을 잡아야 투영점과 보이는 손이 일치한다.
     const grip =
-      vrm.humanoid.getNormalizedBoneNode('rightMiddleDistal') ??
-      vrm.humanoid.getNormalizedBoneNode('rightHand')
+      vrm.humanoid.getRawBoneNode('rightMiddleDistal') ??
+      vrm.humanoid.getRawBoneNode('rightMiddleIntermediate') ??
+      vrm.humanoid.getRawBoneNode('rightMiddleProximal') ??
+      vrm.humanoid.getRawBoneNode('rightHand')
     if (!grip) return false
 
     this.dragRestoreMotion =
-      this.currentMotionName && this.currentMotionName !== DRAG_MOTION
-        ? { name: this.currentMotionName, loop: this.currentMotionLoop }
-        : null
-    if (!this.playMotion(DRAG_MOTION, true)) return false
+      this.dragRestoreMotion ??
+      (this.currentMotionName && this.currentMotionName !== DRAG_MOTION
+        ? {
+            name: this.currentMotionName,
+            loop: this.currentMotionLoop,
+            time: this.currentAction?.time ?? 0
+          }
+        : null)
+    if (!this.playMotion(DRAG_MOTION, true, true)) return false
 
     this.dragGrip = grip
     this.dragAnchor = { x, y }
@@ -306,7 +321,8 @@ export class VrmScene {
     this.renderer.setSize(w, h, false)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
-    this.fitCamera()
+    if (this.dragGrip || this.dragReleaseRemaining > 0) this.refitAfterDrag = true
+    else this.fitCamera()
   }
 
   private fitCamera(): void {
@@ -355,6 +371,10 @@ export class VrmScene {
 
     // 믹서와 humanoid 복사가 끝난 실제 손 위치를 사용해야 한 프레임도 미끄러지지 않는다.
     this.pinDragGripToCursor()
+    if (this.refitAfterDrag && !this.dragGrip && this.dragReleaseRemaining <= 0) {
+      this.refitAfterDrag = false
+      this.fitCamera()
+    }
 
     this.renderer.render(this.scene, this.camera)
 
@@ -472,8 +492,25 @@ export class VrmScene {
     this.dragOffset.set(0, 0, 0)
     const restore = this.dragRestoreMotion
     this.dragRestoreMotion = null
-    if (restore && this.clips.has(restore.name)) this.playMotion(restore.name, restore.loop)
-    else this.stopMotion()
+    if (restore && this.clips.has(restore.name) && this.playMotion(restore.name, restore.loop, true)) {
+      const action = this.currentAction
+      if (action) {
+        const duration = action.getClip().duration
+        action.time = restore.loop && duration > 0 ? restore.time % duration : Math.min(restore.time, duration)
+      }
+    } else this.stopMotion()
+  }
+
+  /**
+   * 절전에서 깨어난 뒤 호출한다.
+   *
+   * 자는 동안 시계는 계속 흘렀다. 그 delta 를 한 번에 적분하면 스프링 본이 발산해서
+   * 머리카락과 옷자락이 날아간다. 시계를 다시 잡고 스프링을 초기 상태로 되돌린다.
+   */
+  wake(): void {
+    // getDelta 를 한 번 버려서 누적된 시간을 흘려보낸다.
+    this.clock.getDelta()
+    this.vrm?.springBoneManager?.reset()
   }
 
   private disposeVrm(): void {
@@ -491,6 +528,7 @@ export class VrmScene {
     this.dragOffset.set(0, 0, 0)
     this.dragReleaseRemaining = 0
     this.dragRestoreMotion = null
+    this.refitAfterDrag = false
     this.clips.clear()
   }
 

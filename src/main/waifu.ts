@@ -19,6 +19,8 @@ import { ControlServer } from './control/server'
 import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
 import { buildSystemPrompt } from './persona/prompt'
 import { MemoryStore } from './persona/memory'
+import { TaskStore } from './tasks/store'
+import type { Task, TaskOrigin, TaskState } from './tasks/store'
 import { synthesize } from './voice/tts'
 
 /**
@@ -42,6 +44,9 @@ export class Waifu {
   /** 렌더러가 실제로 로드에 성공한 모션 이름. 에이전트에게 이 목록으로만 답한다. */
   private motions: string[] = []
   private readonly memory = new MemoryStore()
+  private readonly tasks = new TaskStore()
+  /** 지금 턴이 속한 작업. 에이전트의 task_* 툴은 이걸 대상으로 한다. */
+  private current: Task | null = null
 
   constructor(
     private readonly config: WaifuConfig,
@@ -107,11 +112,71 @@ export class Waifu {
     process.stdout.write(`[waifu] 백엔드 전환 -> ${to} (${why})\n`)
   }
 
-  send(text: string): void {
+  send(text: string, origin: TaskOrigin = 'desktop'): void {
+    // 이어갈 작업이 없으면 새로 만든다. 제목은 첫 발화에서 따고, 에이전트가
+    // 더 정확한 이름을 알게 되면 task_update 로 고친다.
+    if (!this.current || this.current.state === 'done' || this.current.state === 'failed') {
+      this.current = this.tasks.create({
+        title: text.slice(0, 60),
+        cwd: this.cwd,
+        backend: this.active,
+        origin
+      })
+    }
+    this.tasks.append(this.current.id, 'user', text)
+    this.current = this.tasks.update(this.current.id, { state: 'running', needsUser: '' })
+
     void this.backend.send(text).catch((err: unknown) => {
       this.toPanel({ type: 'notice', level: 'error', message: `전송 실패: ${String(err)}` })
     })
     this.toAvatar({ type: 'status', state: 'thinking' })
+  }
+
+  /** 아직 끝나지 않은 작업들. 앱을 다시 켰을 때 이어서 보여준다. */
+  activeTasks(): Task[] {
+    return this.tasks.active()
+  }
+
+  /**
+   * 앱을 다시 켰을 때 남아 있던 작업을 사용자에게 보여준다.
+   *
+   * 자동으로 재개하지는 않는다. 껐다 켠 사이에 상황이 바뀌었을 수 있고, 사용자가
+   * 모르는 사이에 파일을 건드리기 시작하면 곤란하다. 무엇이 남았는지 알리고 기다린다.
+   */
+  reportPendingTasks(): void {
+    const active = this.tasks.active()
+    if (active.length === 0) return
+
+    for (const t of active) {
+      const bits = [`${t.title} (${t.state})`]
+      if (t.nextAction) bits.push(`다음: ${t.nextAction}`)
+      if (t.needsUser) bits.push(`확인 필요: ${t.needsUser}`)
+      this.toPanel({ type: 'notice', level: 'info', message: `· ${bits.join(' — ')}` })
+    }
+    this.toPanel({
+      type: 'notice',
+      level: 'info',
+      message: `이어서 할 작업이 ${active.length}개 있다. 계속하려면 말을 걸어라.`
+    })
+  }
+
+  /**
+   * 한도가 풀릴 시각이 지난 작업이 있는지 본다.
+   *
+   * 절전에서 깨어났을 때와 주기적으로 호출된다. 여기서도 자동 재개는 하지 않고
+   * 알리기만 한다 — 사용자가 자리에 없는 사이 혼자 일을 벌이지 않게 한다.
+   */
+  checkResumable(): void {
+    const due = this.tasks.dueForResume()
+    for (const t of due) {
+      this.toPanel({
+        type: 'notice',
+        level: 'info',
+        message: `"${t.title}" 의 사용량 한도가 풀렸다. 이어서 할 수 있다.`
+      })
+      // pending 으로 되돌려 같은 알림이 매번 반복되지 않게 한다.
+      this.tasks.update(t.id, { state: 'pending', resumeAt: null })
+    }
   }
 
   interrupt(): void {
@@ -137,6 +202,7 @@ export class Waifu {
     await this.backend.stop()
     await this.control.stop()
     this.memory.close()
+    this.tasks.close()
   }
 
   // ─────────────────────── 에이전트 → 아바타 ───────────────────────
@@ -172,6 +238,38 @@ export class Waifu {
 
       case 'ask_permission':
         return this.askPermission(args)
+
+      case 'task_update': {
+        if (!this.current) return '진행 중인 작업이 없다.'
+        const patch: Parameters<TaskStore['update']>[1] = {}
+        if (typeof args.state === 'string') patch.state = args.state as TaskState
+        if (typeof args.plan === 'string') patch.plan = args.plan
+        if (typeof args.next_action === 'string') patch.nextAction = args.next_action
+        if (typeof args.needs_user === 'string') patch.needsUser = args.needs_user
+        if (typeof args.title === 'string' && args.title.trim()) patch.title = args.title
+        this.current = this.tasks.update(this.current.id, patch)
+        return 'ok'
+      }
+
+      case 'task_note': {
+        if (!this.current) return '진행 중인 작업이 없다.'
+        this.tasks.append(this.current.id, 'note', String(args.text ?? ''))
+        return 'ok'
+      }
+
+      case 'task_list': {
+        const active = this.tasks.active()
+        if (active.length === 0) return '진행 중인 작업이 없다.'
+        return active
+          .map((t) => {
+            const bits = [`[${t.state}] ${t.title}`]
+            if (t.plan) bits.push(`  하는 중: ${t.plan}`)
+            if (t.nextAction) bits.push(`  다음: ${t.nextAction}`)
+            if (t.needsUser) bits.push(`  확인 필요: ${t.needsUser}`)
+            return bits.join('\n')
+          })
+          .join('\n\n')
+      }
 
       case 'remember': {
         const key = String(args.key ?? '').trim()
@@ -293,17 +391,43 @@ export class Waifu {
         break
       }
 
+      case 'session':
+        // 세션 키를 작업에 못 박아야 나중에 --resume 으로 이어붙일 수 있다.
+        if (this.current) {
+          this.current = this.tasks.update(this.current.id, {
+            sessionId: e.sessionId,
+            backend: e.backend
+          })
+        }
+        break
+
       case 'tool-start':
         this.toAvatar({ type: 'status', state: 'working' })
+        if (this.current) this.tasks.append(this.current.id, 'tool', e.name)
         break
+
       case 'text-delta':
         this.toAvatar({ type: 'status', state: 'speaking' })
         break
+
+      case 'activity':
+        if (this.current) this.tasks.append(this.current.id, 'note', e.detail)
+        break
+
       case 'result':
         this.toAvatar({ type: 'status', state: e.isError ? 'error' : 'idle' })
+        if (this.current) {
+          this.tasks.append(this.current.id, 'result', e.text)
+          // 에이전트가 task_update 로 done/failed 를 적었으면 그 판단을 존중한다.
+          // 안 적었으면 턴이 끝났다는 사실만 반영하고 상태는 건드리지 않는다 —
+          // 여러 턴에 걸친 작업을 한 턴 끝났다고 done 으로 만들면 안 된다.
+          if (e.isError) this.current = this.tasks.update(this.current.id, { state: 'failed' })
+        }
         break
+
       case 'error':
         this.toAvatar({ type: 'status', state: 'error' })
+        if (this.current) this.tasks.append(this.current.id, 'error', e.message)
         // rate-limit 로 분류된 실패도 전환 대상이다. 한쪽이 막히면 다른 쪽으로 계속 일한다.
         if (e.kind === 'rate-limit') this.maybeFailover('사용량 한도에 걸려')
         break
@@ -316,6 +440,19 @@ export class Waifu {
             level: 'warn',
             message: `사용량 한도(${e.info.rateLimitType})에 걸렸다. ${at} 에 풀린다.`
           })
+          // 작업을 버리지 않고 멈춰둔다. resetsAt 이 있으면 재개 시각을 못 박는다 —
+          // 이게 "한도에 걸려도 작업이 살아남는다" 의 실체다.
+          if (this.current) {
+            this.current = this.tasks.update(this.current.id, {
+              state: 'paused',
+              resumeAt: e.info.resetsAt ? e.info.resetsAt * 1000 : null
+            })
+            this.tasks.append(
+              this.current!.id,
+              'note',
+              `사용량 한도(${e.info.rateLimitType})로 멈춤. 재개 예정: ${at}`
+            )
+          }
           this.maybeFailover('사용량 한도에 걸려')
         }
         break

@@ -106,6 +106,11 @@ export type AvatarCommand =
    * 아니라 토글로 동작한다. 마이크 접근이 렌더러에만 있어서 녹음 자체는 저쪽에서 한다.
    */
   | { type: 'record'; on: boolean }
+  /**
+   * 절전에서 깨어났다. 스프링 본을 초기화해야 한다 —
+   * 몇 시간치 delta 를 한 번에 적분하면 머리카락이 날아간다.
+   */
+  | { type: 'wake' }
 
 // ─────────────────────── 아바타 -> main ───────────────────────
 
@@ -307,7 +312,13 @@ export const WAIFU_TOOLS = [
   'waifu_status',
   'ask_permission',
   'remember',
-  'recall'
+  'recall',
+  /** 지금 진행 중인 작업의 상태를 갱신한다. 재개할 때 어디서부터인지 아는 근거가 된다. */
+  'task_update',
+  /** 작업 저널에 한 줄 남긴다. "어디까지 했어?" 에 답할 재료다. */
+  'task_note',
+  /** 다른 작업들의 상태를 본다. */
+  'task_list'
 ] as const
 
 export type WaifuToolName = (typeof WAIFU_TOOLS)[number]
