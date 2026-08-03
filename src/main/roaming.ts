@@ -8,10 +8,17 @@ import type { BrowserWindow, Display, Rectangle } from 'electron'
  * 이징을 걸어 옮기면서, 그 동안 이동 모션을 재생한다.
  */
 
+/**
+ * 아바타를 어디로 보낼지.
+ *
+ * `waifu_move` 툴이 받는 값(`left` | `right` | `cursor`)과 정확히 같다. 예전에는
+ * `{ kind: 'display'; index }` 변형이 더 있었는데 아무도 만들지 않았고, 그 변형
+ * 때문에 호출부가 `as never` 로 타입을 우회해야 했다 — 실제로 있는 것보다 넓은
+ * 유니온은 그 자체로 캐스팅을 부른다.
+ */
 export type RoamTarget =
   | { kind: 'left' }
   | { kind: 'right' }
-  | { kind: 'display'; index: number }
   /** 커서가 있는 디스플레이로. "이리 와" 에 해당한다. */
   | { kind: 'cursor' }
 
@@ -120,12 +127,8 @@ export function resolveTarget(win: BrowserWindow, target: RoamTarget): Display |
       return displayInDirection(displays, current, -1)
     case 'right':
       return displayInDirection(displays, current, 1)
-    case 'display':
-      return displays[target.index] ?? null
     case 'cursor':
       return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-    default:
-      return null
   }
 }
 

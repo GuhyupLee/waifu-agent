@@ -1,17 +1,15 @@
 import { useEffect, useState } from 'react'
 import type { WaifuConfig } from '@shared/protocol'
+import { T } from '../theme'
 import { S } from './controls'
-import { GeneralTab } from './tabs/GeneralTab'
+import { WaifuTab } from './tabs/WaifuTab'
+import { SystemTab } from './tabs/SystemTab'
 import { AvatarTab } from './tabs/AvatarTab'
+import { PresenceTab } from './tabs/PresenceTab'
 import { PermissionTab } from './tabs/PermissionTab'
 import { VoiceTab } from './tabs/VoiceTab'
 import { NotifyTab } from './tabs/NotifyTab'
 import { MemoryTab } from './tabs/MemoryTab'
-
-/**
- * 설정을 한 화면에 다 쌓으면 스크롤만 길어지고 원하는 걸 못 찾는다.
- * 성격이 다른 것끼리 탭으로 나눈다.
- */
 
 export type Patch = (p: Partial<WaifuConfig>) => void
 
@@ -20,26 +18,76 @@ export interface TabProps {
   patch: Patch
 }
 
-const TABS = [
-  { id: 'general', label: '일반', render: (p: TabProps) => <GeneralTab {...p} /> },
-  { id: 'avatar', label: '아바타', render: (p: TabProps) => <AvatarTab {...p} /> },
-  { id: 'permission', label: '권한', render: (p: TabProps) => <PermissionTab {...p} /> },
-  { id: 'voice', label: '음성', render: (p: TabProps) => <VoiceTab {...p} /> },
-  { id: 'notify', label: '알림·원격', render: (p: TabProps) => <NotifyTab {...p} /> },
-  // 기억·루틴은 config 가 아니라 저장소를 직접 읽으므로 props 가 없다.
-  { id: 'memory', label: '기억·기록', render: (_p: TabProps) => <MemoryTab /> }
-] as const
+/**
+ * 왼쪽 목록 + 오른쪽 본문.
+ *
+ * 가로 탭 줄이었는데 항목이 일곱을 넘어가면서 좁은 창에서 가로로 스크롤되기
+ * 시작했다 — 안 보이는 탭은 없는 탭이다. 세로 목록은 늘어나도 같은 자리에 있고,
+ * 무엇보다 **묶음 제목을 줄 수 있다.** "와이프 / 아바타 / 프로그램" 이 갈려 있으면
+ * 찾는 설정이 어느 쪽인지 대충 짐작이 간다.
+ */
+interface TabItem {
+  id: string
+  label: string
+  render: (p: TabProps) => React.JSX.Element
+}
+
+interface TabGroup {
+  title: string
+  items: TabItem[]
+}
+
+const GROUPS: TabGroup[] = [
+  {
+    title: '와이프',
+    items: [
+      { id: 'waifu', label: '성격과 말', render: (p: TabProps) => <WaifuTab {...p} /> },
+      { id: 'memory', label: '기억과 기록', render: (_p: TabProps) => <MemoryTab /> }
+    ]
+  },
+  {
+    title: '아바타',
+    items: [
+      { id: 'avatar', label: '모델과 창', render: (p: TabProps) => <AvatarTab {...p} /> },
+      { id: 'presence', label: '존재감', render: (p: TabProps) => <PresenceTab {...p} /> },
+      { id: 'voice', label: '목소리', render: (p: TabProps) => <VoiceTab {...p} /> }
+    ]
+  },
+  {
+    title: '프로그램',
+    items: [
+      { id: 'system', label: '백엔드와 실행', render: (p: TabProps) => <SystemTab {...p} /> },
+      { id: 'permission', label: '권한과 안전', render: (p: TabProps) => <PermissionTab {...p} /> },
+      { id: 'notify', label: '알림과 원격', render: (p: TabProps) => <NotifyTab {...p} /> }
+    ]
+  }
+]
+
+const ALL = GROUPS.flatMap((g) => g.items)
+
+// 빈 목록이면 화면이 통째로 비어 원인을 알 수 없다. 조립 실수를 여기서 잡는다.
+if (ALL.length === 0) throw new Error('설정 탭이 하나도 없다')
+const FIRST = ALL[0] as TabItem
 
 export function Settings({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [config, setConfig] = useState<WaifuConfig | null>(null)
-  const [tab, setTab] = useState<string>('general')
+  const [tab, setTab] = useState<string>('waifu')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     void window.waifu.getConfig().then(setConfig)
   }, [])
 
-  if (!config) return <div style={root}>불러오는 중…</div>
+  // Esc 로 닫는다. 설정 화면이 전체를 덮으므로 나가는 길이 버튼 하나뿐이면 답답하다.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  if (!config) return <div style={styles.loading}>불러오는 중…</div>
 
   const patch: Patch = (p) => {
     setSaving(true)
@@ -49,80 +97,116 @@ export function Settings({ onClose }: { onClose: () => void }): React.JSX.Elemen
     })
   }
 
-  const active = TABS.find((t) => t.id === tab) ?? TABS[0]
+  const active = ALL.find((t) => t.id === tab) ?? FIRST
 
   return (
-    <div style={root}>
-      <div style={header}>
-        <b>설정</b>
-        <div style={S.row}>
-          {saving && <span style={S.hint}>저장 중…</span>}
-          <button style={S.ghost} onClick={onClose}>
-            닫기
-          </button>
-        </div>
-      </div>
+    <div className="settings-shell" style={styles.root}>
+      <aside className="settings-sidebar" style={styles.sidebar}>
+        <div className="settings-brand" style={styles.brand}>설정</div>
+        <nav className="settings-nav" style={styles.nav} aria-label="설정 분류">
+          {GROUPS.map((group) => (
+            <div className="settings-group" key={group.title} style={styles.group}>
+              <div className="settings-group-title" style={styles.groupTitle}>{group.title}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  style={{ ...styles.navItem, ...(item.id === tab ? styles.navActive : null) }}
+                  onClick={() => setTab(item.id)}
+                  aria-current={item.id === tab ? 'page' : undefined}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <button className="settings-close" style={styles.close} onClick={onClose}>
+          닫기
+        </button>
+      </aside>
 
-      <div style={tabBar}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            style={{ ...tabButton, ...(t.id === tab ? tabActive : {}) }}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div style={body}>{active.render({ config, patch })}</div>
+      <main className="settings-main" style={styles.main}>
+        <header style={styles.header}>
+          <div style={styles.headerTitle}>{active.label}</div>
+          {/* 저장은 자동이라 눌러야 할 버튼이 없다. 대신 저장됐다는 사실은 보여야 한다. */}
+          {saving && <div role="status" style={S.hint}>저장 중…</div>}
+        </header>
+        <div className="settings-body" style={styles.body}>{active.render({ config, patch })}</div>
+      </main>
     </div>
   )
 }
 
-const root: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  height: '100%',
-  boxSizing: 'border-box'
-}
-
-const header: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '14px 16px 10px'
-}
-
-const tabBar: React.CSSProperties = {
-  display: 'flex',
-  gap: '4px',
-  padding: '0 12px',
-  borderBottom: '1px solid #262432',
-  // 탭이 좁은 창에서 줄바꿈되면 본문이 밀린다. 가로 스크롤이 낫다.
-  overflowX: 'auto',
-  flexShrink: 0
-}
-
-const tabButton: React.CSSProperties = {
-  background: 'transparent',
-  color: '#8b869e',
-  border: 0,
-  borderBottom: '2px solid transparent',
-  padding: '8px 10px',
-  cursor: 'pointer',
-  font: 'inherit',
-  fontSize: '13px',
-  whiteSpace: 'nowrap'
-}
-
-const tabActive: React.CSSProperties = {
-  color: '#e8e6f0',
-  borderBottomColor: '#5a4fcf'
-}
-
-const body: React.CSSProperties = {
-  flex: 1,
-  overflowY: 'auto',
-  padding: '16px'
-}
+const styles = {
+  root: {
+    display: 'flex',
+    height: '100%',
+    boxSizing: 'border-box',
+    background: T.color.base,
+    color: T.color.text,
+    fontSize: T.font.body
+  },
+  loading: {
+    display: 'grid',
+    placeItems: 'center',
+    height: '100%',
+    color: T.color.dim,
+    background: T.color.base
+  },
+  sidebar: {
+    width: '164px',
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    background: T.color.raised,
+    borderRight: `1px solid ${T.color.line}`,
+    padding: `${T.space(3)} ${T.space(2)}`,
+    boxSizing: 'border-box'
+  },
+  brand: {
+    fontSize: T.font.title,
+    fontWeight: 600,
+    padding: `0 ${T.space(2)} ${T.space(3)}`
+  },
+  nav: { flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: T.space(4) },
+  group: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  groupTitle: {
+    color: T.color.dim,
+    fontSize: '11px',
+    letterSpacing: '0.08em',
+    padding: `0 ${T.space(2)} ${T.space(1)}`
+  },
+  navItem: {
+    background: 'transparent',
+    color: T.color.dim,
+    border: 0,
+    borderRadius: T.radius.md,
+    padding: `${T.space(2)} ${T.space(2)}`,
+    textAlign: 'left',
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: T.font.body
+  },
+  navActive: { background: T.color.high, color: T.color.text },
+  close: {
+    marginTop: T.space(3),
+    background: 'transparent',
+    color: T.color.dim,
+    border: `1px solid ${T.color.line}`,
+    borderRadius: T.radius.md,
+    padding: `${T.space(1)} ${T.space(2)}`,
+    cursor: 'pointer',
+    font: 'inherit',
+    fontSize: T.font.small
+  },
+  main: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: `${T.space(4)} ${T.space(5)} ${T.space(3)}`,
+    borderBottom: `1px solid ${T.color.line}`
+  },
+  headerTitle: { fontSize: T.font.title, fontWeight: 600 },
+  body: { flex: 1, overflowY: 'auto', padding: T.space(5) }
+} satisfies Record<string, React.CSSProperties>

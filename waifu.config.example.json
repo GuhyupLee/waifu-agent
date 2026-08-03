@@ -21,7 +21,12 @@
       "tracking": { "enabled": true, "eye": 1, "head": 1, "body": 0.5 },
       "touch": true,
       "dragMotion": true,
+      "dragSway": { "enabled": true, "strength": 1 },
       "clampToScreen": true,
+      "windowSit": { "enabled": false, "taskbar": true },
+      "roam": { "enabled": false, "meanDwellMin": 1.5 },
+      "ambientLight": { "enabled": false, "sampleHz": 8, "smoothing": 0.85 },
+      "autoScale": { "enabled": true, "referenceHeight": 1080, "min": 0.5, "max": 3 },
       "sleep": { "enabled": true, "afterIdleMin": 20, "byClock": false, "fromHour": 23, "toHour": 7 },
       "bubble": { "enabled": true, "maxChars": 140 }
     },

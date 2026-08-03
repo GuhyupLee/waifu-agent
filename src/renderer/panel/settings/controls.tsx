@@ -1,58 +1,76 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
+import { T } from '../theme'
 
-/** 설정 화면에서 반복되는 조각들. 화면마다 다시 쓰지 않으려고 모아둔다. */
+/**
+ * 설정 화면에서 반복되는 조각들. 화면마다 다시 쓰지 않으려고 모아둔다.
+ *
+ * 색과 치수는 전부 `theme.ts` 에서 가져온다. 예전에는 여기에도 hex 가 따로
+ * 박혀 있어서, 한쪽 보라색을 고치면 다른 쪽만 옛 색으로 남았다.
+ */
 
 export const S = {
-  section: { marginBottom: '22px' },
-  title: { color: '#8b869e', fontSize: '12px', marginBottom: '8px', letterSpacing: '0.04em' },
-  hint: { color: '#8b869e', fontSize: '12px', lineHeight: 1.5 },
-  row: { display: 'flex', gap: '12px', alignItems: 'center' },
-  choice: { display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '6px 0', cursor: 'pointer' },
+  section: { marginBottom: T.space(6) },
+  title: {
+    color: T.color.dim,
+    fontSize: T.font.small,
+    marginBottom: T.space(2),
+    letterSpacing: '0.04em'
+  },
+  hint: { color: T.color.dim, fontSize: T.font.small, lineHeight: 1.5 },
+  row: { display: 'flex', gap: T.space(3), alignItems: 'center' },
+  choice: {
+    display: 'flex',
+    gap: T.space(2),
+    alignItems: 'flex-start',
+    padding: `${T.space(2)} 0`,
+    cursor: 'pointer'
+  },
+  /** 되돌릴 수 없거나 오해하기 쉬운 것. 본문보다 눈에 띄어야 한다. */
   warn: {
-    background: '#3a2733',
-    border: '1px solid #6b4050',
-    borderRadius: '8px',
-    padding: '8px 10px',
-    fontSize: '12px',
-    marginTop: '6px',
-    lineHeight: 1.5
+    background: T.color.high,
+    border: `1px solid ${T.color.accent}`,
+    borderRadius: T.radius.md,
+    padding: `${T.space(2)} ${T.space(3)}`,
+    fontSize: T.font.small,
+    marginTop: T.space(2),
+    lineHeight: 1.6
   },
   input: {
     width: '100%',
     boxSizing: 'border-box',
-    marginTop: '4px',
-    background: '#1e1c2b',
+    marginTop: T.space(1),
+    background: T.color.base,
     color: 'inherit',
-    border: '1px solid #322f45',
-    borderRadius: '8px',
-    padding: '8px',
+    border: `1px solid ${T.color.line}`,
+    borderRadius: T.radius.md,
+    padding: T.space(2),
     font: 'inherit'
   },
   button: {
-    background: '#5a4fcf',
+    background: T.color.accent,
     color: '#fff',
     border: 0,
-    borderRadius: '8px',
-    padding: '6px 14px',
+    borderRadius: T.radius.md,
+    padding: `${T.space(2)} ${T.space(4)}`,
     cursor: 'pointer',
     font: 'inherit'
   },
   ghost: {
     background: 'transparent',
-    color: '#b9b3cc',
-    border: '1px solid #3a3750',
-    borderRadius: '8px',
-    padding: '4px 12px',
+    color: T.color.dim,
+    border: `1px solid ${T.color.line}`,
+    borderRadius: T.radius.md,
+    padding: `${T.space(1)} ${T.space(3)}`,
     cursor: 'pointer',
     font: 'inherit',
-    fontSize: '12px'
+    fontSize: T.font.small
   },
   listRow: {
     display: 'flex',
-    gap: '10px',
+    gap: T.space(3),
     alignItems: 'center',
-    padding: '8px 0',
-    borderBottom: '1px solid #262432'
+    padding: `${T.space(2)} 0`,
+    borderBottom: `1px solid ${T.color.line}`
   },
   mono: {
     fontSize: '12px',
@@ -168,22 +186,28 @@ export function Slider({
   format?: (v: number) => string
   onChange: (v: number) => void
 }): React.JSX.Element {
+  const inputId = useId()
+  const hintId = hint ? `${inputId}-hint` : undefined
+  const shownValue = format ? format(value) : String(value)
   return (
     <div style={{ marginTop: '12px' }}>
       <div style={{ ...S.row, justifyContent: 'space-between' }}>
-        <span style={{ fontSize: '13px' }}>{label}</span>
-        <span style={S.hint}>{format ? format(value) : value}</span>
+        <label htmlFor={inputId} style={{ fontSize: '13px' }}>{label}</label>
+        <span style={S.hint}>{shownValue}</span>
       </div>
       <input
+        id={inputId}
         type="range"
         style={{ width: '100%', marginTop: '4px' }}
         min={min}
         max={max}
         step={step}
         value={value}
+        aria-valuetext={shownValue}
+        aria-describedby={hintId}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      {hint && <div style={S.hint}>{hint}</div>}
+      {hint && <div id={hintId} style={S.hint}>{hint}</div>}
     </div>
   )
 }

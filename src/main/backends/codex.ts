@@ -7,8 +7,10 @@ import {
   codexSpawnErrorEvents
 } from './codexEvents'
 import { NdjsonReader, parseLines } from './ndjson'
+import { terminateProcessTree } from './processTree'
+import type { ProcessTreeTerminator } from './processTree'
 import { cleanEnv } from './types'
-import type { AgentBackend, BackendListener, SessionOpts } from './types'
+import type { AgentBackend, BackendListener, BackendTurnOpts, SessionOpts } from './types'
 
 /**
  * Codex CLI 백엔드.
@@ -106,6 +108,8 @@ export class CodexBackend implements AgentBackend {
   private stopping: Promise<void> | null = null
   private readonly interrupted = new WeakSet<ChildProcessWithoutNullStreams>()
 
+  constructor(private readonly terminateChild: ProcessTreeTerminator = terminateProcessTree) {}
+
   get sessionId(): string | null {
     return this._sessionId
   }
@@ -133,13 +137,19 @@ export class CodexBackend implements AgentBackend {
     if (opts.resumeSessionId) this._sessionId = opts.resumeSessionId
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, turnOpts?: BackendTurnOpts): Promise<void> {
     const opts = this.opts
     if (!opts) throw new Error('백엔드가 시작되지 않았다')
     if (this.child || this.stopping) throw new Error('이전 턴이 아직 끝나지 않았다')
 
     this._busy = true
-    const args = buildCodexArgs(opts, text, this._sessionId)
+    // Discord 같은 원격 출처는 앱 기본값보다 낮은 권한을 줄 수 있다.
+    // 세션 설정 자체를 바꾸면 다음 데스크톱 턴까지 낮아지므로 spawn 인자만 덮어쓴다.
+    const effectiveOpts: SessionOpts = {
+      ...opts,
+      permissionMode: turnOpts?.permissionMode ?? opts.permissionMode
+    }
+    const args = buildCodexArgs(effectiveOpts, text, this._sessionId)
 
     const child = spawn(opts.bin, args, {
       cwd: opts.cwd,
@@ -218,26 +228,13 @@ export class CodexBackend implements AgentBackend {
     if (!child) return
     this.interrupted.add(child)
 
-    const waitForStop = new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 2000)
-      child.once('close', () => {
-        clearTimeout(timer)
-        resolve()
-      })
-      try {
-        child.kill()
-      } catch {
-        clearTimeout(timer)
-        resolve()
-      }
-    })
+    const waitForStop = Promise.resolve().then(() => this.terminateChild(child, 'Codex'))
     this.stopping = waitForStop
 
     try {
       await waitForStop
     } finally {
-      // 2초 안에 close가 안 와도 다음 턴은 열되, 늦은 이벤트는 identity guard가 버린다.
-      if (this.child === child) this.child = null
+      // 종료 확인에 실패한 child 핸들은 보존해 다음 stop()에서 같은 트리를 다시 정리한다.
       this._busy = false
       this.stopping = null
     }

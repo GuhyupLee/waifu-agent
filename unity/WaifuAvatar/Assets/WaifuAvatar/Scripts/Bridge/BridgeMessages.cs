@@ -103,9 +103,57 @@ namespace WaifuAvatar.Bridge
         public TrackingDto tracking = new TrackingDto();
         public bool touch = true;
         public bool dragMotion = true;
+        public DragSwayDto dragSway = new DragSwayDto();
         public bool clampToScreen = true;
         public SleepDto sleep = new SleepDto();
         public BubbleDto bubble = new BubbleDto();
+        public WindowSitDto windowSit = new WindowSitDto();
+        public RoamDto roam = new RoamDto();
+        public AmbientLightDto ambientLight = new AmbientLightDto();
+        public AutoScaleDto autoScale = new AutoScaleDto();
+    }
+
+    /// <summary>화면 가장자리 색으로 조명을 물들인다 (Phase 4).</summary>
+    [Serializable]
+    public class AmbientLightDto
+    {
+        public bool enabled;
+        public float sampleHz = 8f;
+        public float smoothing = 0.85f;
+    }
+
+    /// <summary>모니터 해상도에 맞춘 자동 배율 (Phase 4).</summary>
+    [Serializable]
+    public class AutoScaleDto
+    {
+        public bool enabled = true;
+        public float referenceHeight = 1080f;
+        public float min = 0.5f;
+        public float max = 3f;
+    }
+
+    /// <summary>같은 모니터 안 배회 (Phase 4).</summary>
+    [Serializable]
+    public class RoamDto
+    {
+        public bool enabled;
+        public float meanDwellMin = 1.5f;
+    }
+
+    /// <summary>잡아 끄는 동안 관성으로 몸이 기운다.</summary>
+    [Serializable]
+    public class DragSwayDto
+    {
+        public bool enabled = true;
+        public float strength = 1f;
+    }
+
+    /// <summary>창·작업표시줄 걸터앉기 (Phase 4). Windows 밖에서는 무시된다.</summary>
+    [Serializable]
+    public class WindowSitDto
+    {
+        public bool enabled;
+        public bool taskbar = true;
     }
 
     [Serializable]
@@ -169,6 +217,13 @@ namespace WaifuAvatar.Bridge
     {
         public string type = "speech-end";
         public string id;
+    }
+
+    [Serializable]
+    public class MotionsEvent
+    {
+        public string type = "motions";
+        public string[] names = Array.Empty<string>();
     }
 
     [Serializable]

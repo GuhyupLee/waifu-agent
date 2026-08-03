@@ -24,6 +24,23 @@ namespace WaifuAvatar.Avatar
         readonly Dictionary<string, Vrm10AnimationInstance> _loaded =
             new Dictionary<string, Vrm10AnimationInstance>();
         readonly Dictionary<string, string> _paths = new Dictionary<string, string>();
+        readonly Dictionary<string, bool> _loops = new Dictionary<string, bool>();
+        readonly Dictionary<string, Task<Vrm10AnimationInstance>> _loading =
+            new Dictionary<string, Task<Vrm10AnimationInstance>>();
+        bool _disposed;
+
+        [Serializable]
+        class MotionManifest
+        {
+            public MotionManifestEntry[] files;
+        }
+
+        [Serializable]
+        class MotionManifestEntry
+        {
+            public string name;
+            public bool loop;
+        }
 
         /// <summary>불러올 수 있는 모션 이름들. 파일 이름에서 확장자를 뗀 것이다.</summary>
         public IReadOnlyCollection<string> Names => _paths.Keys;
@@ -32,6 +49,7 @@ namespace WaifuAvatar.Avatar
         public void Scan(string directory)
         {
             _paths.Clear();
+            _loops.Clear();
             if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
             {
                 Debug.LogWarning($"[waifu] 모션 폴더가 없다: {directory}");
@@ -42,17 +60,58 @@ namespace WaifuAvatar.Avatar
             {
                 _paths[Path.GetFileNameWithoutExtension(path)] = path;
             }
+            LoadManifest(Path.Combine(directory, "manifest.json"));
             Debug.Log($"[waifu] 모션 {_paths.Count}개 발견 — {directory}");
         }
+
+        void LoadManifest(string path)
+        {
+            if (!File.Exists(path)) return;
+            try
+            {
+                var manifest = JsonUtility.FromJson<MotionManifest>(File.ReadAllText(path));
+                if (manifest?.files == null) return;
+                var loaded = 0;
+                foreach (var entry in manifest.files)
+                {
+                    if (entry == null || string.IsNullOrEmpty(entry.name) || !_paths.ContainsKey(entry.name))
+                        continue;
+                    _loops[entry.name] = entry.loop;
+                    loaded++;
+                }
+                Debug.Log($"[waifu] 모션 반복 메타데이터 {loaded}개 적용");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[waifu] 모션 manifest를 읽지 못했다: {e.Message}");
+            }
+        }
+
+        /// <summary>메타데이터가 없는 사용자 모션은 이전 동작과 호환되도록 루프로 본다.</summary>
+        public bool IsLooping(string name) =>
+            string.IsNullOrEmpty(name) || !_loops.TryGetValue(name, out var loop) || loop;
 
         /// <summary>
         /// 모션 하나를 읽는다. 실패하면 null 을 돌려주고 이름을 목록에서 지운다 —
         /// 깨진 파일을 매번 다시 읽으려 들면 전환할 때마다 끊긴다.
         /// </summary>
-        public async Task<Vrm10AnimationInstance> LoadAsync(string name)
+        public Task<Vrm10AnimationInstance> LoadAsync(string name)
         {
-            if (_loaded.TryGetValue(name, out var cached)) return cached;
-            if (!_paths.TryGetValue(name, out var path)) return null;
+            if (_disposed) return Task.FromResult<Vrm10AnimationInstance>(null);
+            if (_loaded.TryGetValue(name, out var cached))
+                return Task.FromResult(cached);
+            if (_loading.TryGetValue(name, out var pending)) return pending;
+            if (!_paths.TryGetValue(name, out var path))
+                return Task.FromResult<Vrm10AnimationInstance>(null);
+
+            var task = LoadCoreAsync(name, path);
+            _loading[name] = task;
+            return task;
+        }
+
+        async Task<Vrm10AnimationInstance> LoadCoreAsync(string name, string path)
+        {
+            GameObject importedRoot = null;
 
             try
             {
@@ -60,18 +119,36 @@ namespace WaifuAvatar.Avatar
                 var vrmaData = new VrmAnimationData(data);
                 using var loader = new VrmAnimationImporter(vrmaData);
                 var gltf = await loader.LoadAsync(new ImmediateCaller());
+                importedRoot = gltf.gameObject;
+                if (_disposed)
+                {
+                    UnityEngine.Object.Destroy(gltf.gameObject);
+                    return null;
+                }
                 var instance = gltf.GetComponent<Vrm10AnimationInstance>();
                 if (instance == null)
                 {
                     Debug.LogWarning($"[waifu] {name} 에 VRMA 확장이 없다");
                     _paths.Remove(name);
+                    UnityEngine.Object.Destroy(gltf.gameObject);
                     return null;
                 }
 
                 // 박스맨은 디버그용 대역 메시다. 켜두면 아바타 옆에 상자 인형이 선다.
                 instance.ShowBoxMan(false);
                 instance.gameObject.SetActive(true);
+                var animation = instance.GetComponent<Animation>();
+                if (animation == null || animation.clip == null)
+                    throw new InvalidDataException($"{name} 에 재생할 AnimationClip 이 없다");
+                var rig = ((IVrm10Animation)instance).ControlRig;
+                if (rig.Item1 == null || rig.Item2 == null)
+                    throw new InvalidDataException($"{name} 의 humanoid/T-pose 매핑이 불완전하다");
+
+                // SetTime만 먼저 부르면 UniVRM 내부 m_state가 null이라 NRE가 난다.
+                // 한 번 시작해 speed=0으로 만든 뒤 PresenceDirector가 매 프레임 시간을 샘플한다.
+                ((UnityEngine.Timeline.ITimeControl)instance).OnControlTimeStart();
                 _loaded[name] = instance;
+                importedRoot = null;
                 return instance;
             }
             catch (Exception e)
@@ -80,7 +157,12 @@ namespace WaifuAvatar.Avatar
                 // 에이전트에게 알려주는 이름이 "실제로 되는 것" 만 남는다.
                 Debug.LogWarning($"[waifu] 모션 로드 실패 {name}: {e.Message}");
                 _paths.Remove(name);
+                if (importedRoot != null) UnityEngine.Object.Destroy(importedRoot);
                 return null;
+            }
+            finally
+            {
+                _loading.Remove(name);
             }
         }
 
@@ -94,12 +176,24 @@ namespace WaifuAvatar.Avatar
 
         public void Dispose()
         {
+            _disposed = true;
             foreach (var instance in _loaded.Values)
             {
-                if (instance != null) UnityEngine.Object.Destroy(instance.gameObject);
+                if (instance == null) continue;
+                try
+                {
+                    ((UnityEngine.Timeline.ITimeControl)instance).OnControlTimeStop();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[waifu] VRMA 종료 실패: {e.Message}");
+                }
+                UnityEngine.Object.Destroy(instance.gameObject);
             }
             _loaded.Clear();
+            _loading.Clear();
             _paths.Clear();
+            _loops.Clear();
         }
     }
 
@@ -145,6 +239,7 @@ namespace WaifuAvatar.Avatar
         readonly BlendProvider _provider = new BlendProvider();
         readonly Dictionary<ExpressionKey, Func<float>> _expressions =
             new Dictionary<ExpressionKey, Func<float>>();
+        readonly HashSet<ExpressionKey> _knownExpressionKeys = new HashSet<ExpressionKey>();
 
         public (INormalizedPoseProvider, ITPoseProvider) ControlRig =>
             (_provider, (_provider.To ?? _provider.From)?.ControlRig.Item2);
@@ -169,11 +264,10 @@ namespace WaifuAvatar.Avatar
             var to = _provider.To;
             var weight = _provider.Weight;
 
-            var keys = new HashSet<ExpressionKey>();
-            if (from != null) foreach (var k in from.ExpressionMap.Keys) keys.Add(k);
-            if (to != null) foreach (var k in to.ExpressionMap.Keys) keys.Add(k);
+            if (from != null) foreach (var k in from.ExpressionMap.Keys) _knownExpressionKeys.Add(k);
+            if (to != null) foreach (var k in to.ExpressionMap.Keys) _knownExpressionKeys.Add(k);
 
-            foreach (var key in keys)
+            foreach (var key in _knownExpressionKeys)
             {
                 Func<float> readFrom = null;
                 Func<float> readTo = null;

@@ -15,6 +15,7 @@ import { UnityProcessManager } from './unityProcess'
 
 export interface UnityShellDeps {
   onEvent?: (event: AvatarEvent) => void
+  onConnectionChanged?: (connected: boolean) => void
   /** 사용자에게 보여야 하는 사건. 조용히 실패하면 아바타가 왜 없는지 알 수 없다. */
   notify?: (level: 'info' | 'warn' | 'error', message: string) => void
 }
@@ -22,6 +23,8 @@ export interface UnityShellDeps {
 export class UnityAvatarShell {
   private bridge: AvatarBridgeServer | null = null
   private process: UnityProcessManager | null = null
+  private stopping = false
+  private stopPromise: Promise<void> | null = null
 
   constructor(
     private readonly config: WaifuConfig,
@@ -36,6 +39,7 @@ export class UnityAvatarShell {
   async start(): Promise<void> {
     const { avatar, unity } = this.config
     if (avatar.renderer !== 'unity') return
+    if (this.stopping) throw new Error('종료 중인 Unity 셸은 다시 시작할 수 없다')
 
     if (!unity.playerPath) {
       this.log('warn', 'unity.playerPath 가 비어 있다. Unity 셸을 띄우지 않는다.')
@@ -45,6 +49,7 @@ export class UnityAvatarShell {
     const bridge = new AvatarBridgeServer({
       onEvent: (event) => this.deps.onEvent?.(event),
       onConnect: () => {
+        this.deps.onConnectionChanged?.(true)
         this.log('info', 'Unity 셸이 연결됐다.')
         // 이 실행은 성공이다. 재시작 예산을 되돌려준다.
         this.process?.notifyConnected()
@@ -52,24 +57,42 @@ export class UnityAvatarShell {
         // 돌아가 있으므로, 한 번만 보내면 재시작 뒤 사용자 설정이 조용히 사라진다.
         this.pushPresence()
       },
-      onDisconnect: (reason) => this.log('warn', `Unity 셸 연결 끊김 — ${reason}`),
-      onReject: (reason) => this.log('error', `Unity 셸 연결 거절 — ${reason}`)
+      onDisconnect: (reason) => {
+        this.deps.onConnectionChanged?.(false)
+        this.log('warn', `Unity 셸 연결 끊김 — ${reason}`)
+      },
+      onReject: (reason) => {
+        this.deps.onConnectionChanged?.(false)
+        this.log('error', `Unity 셸 연결 거절 — ${reason}`)
+      }
     })
     this.bridge = bridge
 
     // **포트를 먼저 얻어야 한다.** 환경변수에 넣어 보낼 값이라 spawn 보다 앞선다.
-    const port = await bridge.start()
-    this.log('info', `아바타 브리지 127.0.0.1:${port}`)
+    try {
+      const port = await bridge.start()
+      if (this.stopping || this.bridge !== bridge) {
+        throw new Error('Unity 셸 시작 중 프로그램이 종료됐다')
+      }
+      this.log('info', `아바타 브리지 127.0.0.1:${port}`)
 
-    this.process = new UnityProcessManager({
-      playerPath: unity.playerPath,
-      bridgeEnv: { ...bridge.childEnv(), ...this.windowEnv() },
-      maxRestarts: unity.maxRestarts,
-      launchTimeoutMs: unity.launchTimeoutMs,
-      log: (level, message) => this.log(level, message),
-      onGaveUp: (reason) => this.log('error', reason)
-    })
-    this.process.start()
+      this.process = new UnityProcessManager({
+        playerPath: unity.playerPath,
+        bridgeEnv: { ...bridge.childEnv(), ...this.windowEnv() },
+        maxRestarts: unity.maxRestarts,
+        launchTimeoutMs: unity.launchTimeoutMs,
+        log: (level, message) => this.log(level, message),
+        onGaveUp: (reason) => this.log('error', reason)
+      })
+      this.process.start()
+    } catch (err) {
+      try {
+        await this.stop()
+      } catch (cleanupErr) {
+        throw new AggregateError([err, cleanupErr], 'Unity 셸 시작 실패 후 정리도 실패했다')
+      }
+      throw err
+    }
   }
 
   /**
@@ -90,6 +113,7 @@ export class UnityAvatarShell {
 
   /** 연결이 없으면 false. 큐에 쌓지 않는다. */
   send(command: AvatarCommand): boolean {
+    if (this.stopping) return false
     return this.bridge?.send(command) ?? false
   }
 
@@ -104,14 +128,44 @@ export class UnityAvatarShell {
    * 순서가 중요하다 — 브리지를 먼저 닫으면 Unity 는 연결이 끊긴 것으로 보고 스스로
    * 종료하는데, 그 사이 우리가 프로세스를 놓치면 종료를 확인할 방법이 없어진다.
    */
-  async stop(): Promise<void> {
-    const process = this.process
-    const bridge = this.bridge
-    this.process = null
-    this.bridge = null
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
+    this.stopping = true
+    const attempt = this.performStop()
+    let tracked: Promise<void>
+    tracked = attempt.finally(() => {
+      // 실패한 종료도 캐시에서 걷어내야 같은 child 핸들로 다시 시도할 수 있다.
+      if (this.stopPromise === tracked) this.stopPromise = null
+    })
+    this.stopPromise = tracked
+    return tracked
+  }
 
-    await process?.stop()
-    await bridge?.stop()
+  private async performStop(): Promise<void> {
+    const processManager = this.process
+    const bridge = this.bridge
+
+    // Unity 프로세스 종료 확인이 실패해도 localhost 브리지는 반드시 닫는다.
+    // 그렇지 않으면 재시작을 취소한 현재 앱에 인증 서버만 유령처럼 남는다.
+    const shutdowns = await Promise.allSettled([
+      processManager?.stop() ?? Promise.resolve(),
+      bridge?.stop() ?? Promise.resolve()
+    ])
+    // 종료를 확인한 소유 자원만 놓는다. 실패한 프로세스/서버 핸들은 다음 stop()이
+    // 다시 종료할 수 있도록 반드시 보존한다.
+    if (shutdowns[0].status === 'fulfilled' && this.process === processManager) this.process = null
+    if (shutdowns[1].status === 'fulfilled' && this.bridge === bridge) this.bridge = null
+    const failures = shutdowns.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    )
+    const singleFailure = failures[0]
+    if (singleFailure && failures.length === 1) throw singleFailure.reason
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        'Unity 셸 프로세스와 브리지를 모두 닫지 못했다'
+      )
+    }
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {

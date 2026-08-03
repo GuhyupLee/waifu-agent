@@ -30,7 +30,22 @@ export function createPanelWindow(personaName: string): BrowserWindow {
     }
   })
 
-  win.once('ready-to-show', () => win.show())
-  void loadRendererPage(win, 'panel')
+  win.once('ready-to-show', () => {
+    win.show()
+    // 어디에 떴는지 남긴다. "창이 안 뜬다" 의 원인은 대개 안 뜬 게 아니라
+    // 보이지 않는 자리에 뜬 것이다 — 다중 모니터에서 좌표가 음수이거나,
+    // 해상도가 바뀐 뒤 저장된 자리가 화면 밖일 때.
+    const b = win.getBounds()
+    process.stdout.write(`[panel] 창 ${b.width}x${b.height} @ ${b.x},${b.y}\n`)
+  })
+
+  // 로드가 실패하면 ready-to-show 가 오지 않아 창이 영원히 숨은 채로 남는다.
+  // 조용히 사라지는 대신 이유를 남기고 빈 창이라도 띄운다.
+  win.webContents.on('did-fail-load', (_e, code, description, url) => {
+    process.stderr.write(`[panel] 로드 실패 (${code} ${description}) ${url}\n`)
+    if (!win.isDestroyed() && !win.isVisible()) win.show()
+  })
+
+  loadRendererPage(win, 'panel')
   return win
 }

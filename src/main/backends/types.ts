@@ -40,6 +40,11 @@ export interface SessionOpts {
 
 export type BackendListener = (event: BackendEvent) => void
 
+export interface BackendTurnOpts {
+  /** 요청 출처에 따라 낮아질 수 있는 이번 턴의 유효 권한. */
+  permissionMode?: PermissionMode
+}
+
 export interface AgentBackend {
   readonly kind: BackendKind
   /** CLI 가 부여한 세션 id. start 전에는 null. */
@@ -49,7 +54,7 @@ export interface AgentBackend {
 
   start(opts: SessionOpts): Promise<void>
   /** 유저 발화 한 턴. */
-  send(text: string): Promise<void>
+  send(text: string, opts?: BackendTurnOpts): Promise<void>
   /** 진행 중인 턴을 중단한다. */
   interrupt(): Promise<void>
   stop(): Promise<void>

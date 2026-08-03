@@ -27,9 +27,13 @@ export type ToolHandler = (
 ) => Promise<unknown> | unknown
 
 const TOKEN_HEADER = 'x-waifu-token'
+const MAX_BODY_BYTES = 1024 * 1024
+const RECEIVE_TIMEOUT_MS = 15_000
+const STOP_TIMEOUT_MS = 2_000
 
 export class ControlServer {
   private server: Server | null = null
+  private stopAttempt: Promise<void> | null = null
   private _port = 0
   readonly token = randomBytes(24).toString('hex')
 
@@ -47,11 +51,17 @@ export class ControlServer {
   async start(): Promise<number> {
     if (this.server) return this._port
 
-    const server = createServer((req, res) => void this.onRequest(req, res))
-    // 권한 승인은 사용자가 누를 때까지 응답을 붙잡고 있다. 기본 5분 제한에 걸리면
-    // 사용자가 자리를 비운 사이 요청이 끊긴다.
-    server.requestTimeout = 0
-    server.headersTimeout = 0
+    const server = createServer((req, res) => {
+      void this.onRequest(req, res).catch((err: unknown) => {
+        // partial body를 보낸 자식이 끊기거나 앱 종료가 socket을 닫아도 main까지 죽이면 안 된다.
+        process.stderr.write(`[control] 요청 처리 중 연결 종료: ${String(err)}\n`)
+        if (!res.destroyed) res.destroy()
+      })
+    })
+    // 권한 handler는 사용자가 누를 때까지 오래 기다려도 된다. 반면 헤더/본문을 덜 보낸
+    // socket은 프로그램 종료를 영원히 막으므로 수신 단계만 제한한다.
+    server.requestTimeout = RECEIVE_TIMEOUT_MS
+    server.headersTimeout = RECEIVE_TIMEOUT_MS
     server.timeout = 0
     this.server = server
 
@@ -76,8 +86,16 @@ export class ControlServer {
     }
 
     let body = ''
+    let bodyBytes = 0
     req.setEncoding('utf8')
-    for await (const chunk of req) body += chunk
+    for await (const chunk of req) {
+      bodyBytes += Buffer.byteLength(chunk)
+      if (bodyBytes > MAX_BODY_BYTES) {
+        res.writeHead(413).end()
+        return
+      }
+      body += chunk
+    }
 
     let request: ControlRequest
     try {
@@ -101,10 +119,43 @@ export class ControlServer {
     res.end(JSON.stringify(out))
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopAttempt) return this.stopAttempt
     const server = this.server
-    this.server = null
-    if (!server) return
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    if (!server) return Promise.resolve()
+
+    const attempt = this.stopServer(server)
+    let tracked: Promise<void>
+    tracked = attempt.finally(() => {
+      if (this.stopAttempt === tracked) this.stopAttempt = null
+    })
+    this.stopAttempt = tracked
+    return tracked
+  }
+
+  private async stopServer(server: Server): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const finish = (error?: Error): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error) reject(error)
+        else resolve()
+      }
+      const timer = setTimeout(
+        () => finish(new Error('로컬 제어 서버를 제한 시간 안에 닫지 못했다')),
+        STOP_TIMEOUT_MS
+      )
+      timer.unref?.()
+
+      server.close((error) => finish(error ?? undefined))
+      // close()만으로는 partial body와 keep-alive 연결을 기다린다. 앱을 닫는 순간에는
+      // 진행 중 권한 요청도 이미 deny했으므로 연결을 즉시 끊는 것이 맞다.
+      server.closeAllConnections()
+    })
+    // close callback으로 종료가 확인된 뒤에만 핸들을 놓는다. 실패하면 다음 stop()이
+    // 같은 서버에 다시 closeAllConnections를 적용할 수 있어야 한다.
+    if (this.server === server) this.server = null
   }
 }

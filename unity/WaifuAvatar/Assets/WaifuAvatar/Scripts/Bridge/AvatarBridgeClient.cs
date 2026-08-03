@@ -34,8 +34,6 @@ namespace WaifuAvatar.Bridge
         /// <summary>연결이 끝났다. 인자는 로그용 사유다.</summary>
         public event Action<string> Closed;
 
-        public event Action Connected;
-
         public static bool TryReadEnvironment(out string url, out string token, out string error)
         {
             url = null;
@@ -100,8 +98,19 @@ namespace WaifuAvatar.Bridge
                 return false;
             }
 
+            // 버전이 어긋나면 끊는다. 셸은 Electron 과 따로 빌드되므로 앱만 업데이트하고
+            // 예전 플레이어가 남아 있는 조합이 실제로 생긴다. 그때 조용히 반쯤 동작하면
+            // "명령이 가끔 안 먹는다" 는 재현 불가능한 버그가 된다.
+            //
+            // 예전에는 ack 의 protocolVersion 을 역직렬화해두고 비교하지 않아서,
+            // 핸드셰이크에서 끊겠다는 계약이 실제로는 지켜지지 않았다.
+            if (ack.protocolVersion != Protocol.Version)
+            {
+                Closed?.Invoke($"프로토콜 버전 불일치: 셸 {Protocol.Version}, main {ack.protocolVersion}");
+                return false;
+            }
+
             Authenticated = true;
-            Connected?.Invoke();
             _receiveLoop = Task.Run(ReceiveLoopAsync);
             return true;
         }

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "format": "VRMC_vrm_animation 1.0 in GLB 2.0",
   "generator": "scripts/generate-vrma-library.mjs",
-  "count": 55,
+  "count": 58,
   "fps": 30,
   "humanoidBoneCount": 51,
   "provenance": {
@@ -599,6 +599,48 @@
       "description": "양팔을 높이 들고 몸 전체로 기뻐한다.",
       "bytes": 99540,
       "sha256": "fd220333cb205614b042c1d731e83b42ea1b1715e20d8ddab71abbe91ecfe282"
+    },
+    {
+      "name": "sit-edge",
+      "title": "걸터앉아 다리 늘어뜨리기",
+      "filename": "sit-edge.vrma",
+      "category": "sit",
+      "duration": 6.8,
+      "frameCount": 205,
+      "fps": 30,
+      "loop": true,
+      "recommendedExpression": "relaxed",
+      "description": "창 가장자리에 앉아 정강이를 수직으로 늘어뜨리고 손으로 모서리를 짚는다.",
+      "bytes": 191204,
+      "sha256": "a4a7814d86c97a0d720fd7cf7c521b79584af9fe822ae63e09eb26fd9fe381c1"
+    },
+    {
+      "name": "sit-legs-swing",
+      "title": "걸터앉아 다리 흔들기",
+      "filename": "sit-legs-swing.vrma",
+      "category": "sit",
+      "duration": 5.2,
+      "frameCount": 157,
+      "fps": 30,
+      "loop": true,
+      "recommendedExpression": "happy",
+      "description": "앉은 채 두 다리를 반대 위상으로 흔들고 상체가 작게 따라 튄다.",
+      "bytes": 150496,
+      "sha256": "60c29e1b7720e75e8be21e3b4dfe36ed5c55b9f3a3f8aa7a15507016a061926e"
+    },
+    {
+      "name": "sit-lean-back",
+      "title": "걸터앉아 뒤로 기대기",
+      "filename": "sit-lean-back.vrma",
+      "category": "sit",
+      "duration": 7.4,
+      "frameCount": 223,
+      "fps": 30,
+      "loop": true,
+      "recommendedExpression": "relaxed",
+      "description": "뒤로 짚은 두 팔에 체중을 싣고 고개를 살짝 젖힌 채 느리게 호흡한다.",
+      "bytes": 206476,
+      "sha256": "589bf49cd0b8e4934d4f673aac92f6ea48a2b7a7fa476d623a13fe30b9d132dd"
     },
     {
       "name": "walk",

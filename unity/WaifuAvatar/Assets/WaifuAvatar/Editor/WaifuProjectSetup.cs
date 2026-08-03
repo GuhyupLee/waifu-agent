@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using Kirurobo;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -66,7 +67,60 @@ namespace WaifuAvatar.Editor
             PlayerSettings.productName = "WaifuAvatar";
             PlayerSettings.companyName = "waifu-agent";
 
+            PreserveRuntimeShaders();
+
             Debug.Log("[waifu] PlayerSettings 적용 — 투명 창 요구사항 반영됨");
+        }
+
+        /// <summary>
+        /// VRM은 실행 중 파일을 읽으므로 씬/머티리얼에 직접 참조되지 않은 셰이더도 필요하다.
+        /// 빌드 스트리핑이 이들을 지우면 에디터에서는 되던 모델이 플레이어에서
+        /// <c>Value cannot be null (Shader)</c> 로 실패한다.
+        /// </summary>
+        static void PreserveRuntimeShaders()
+        {
+            var settings = AssetDatabase.LoadAssetAtPath<GraphicsSettings>(
+                "ProjectSettings/GraphicsSettings.asset");
+            if (settings == null) throw new System.Exception("GraphicsSettings.asset 을 열지 못했다");
+
+            var serialized = new SerializedObject(settings);
+            var included = serialized.FindProperty("m_AlwaysIncludedShaders");
+            if (included == null || !included.isArray)
+                throw new System.Exception("Always Included Shaders 설정을 찾지 못했다");
+
+            var requiredNames = new[]
+            {
+                "Standard",
+                "Unlit/Texture",
+                "Unlit/Transparent",
+                "Unlit/Transparent Cutout",
+                "UniGLTF/UniUnlit",
+                "VRM/MToon",
+                "VRM10/MToon10",
+                "Hidden/UniGLTF/NormalMapExporter",
+                "Hidden/UniGLTF/StandardMapExporter",
+                "Hidden/UniGLTF/StandardMapImporter",
+            };
+
+            var existing = Enumerable.Range(0, included.arraySize)
+                .Select(i => included.GetArrayElementAtIndex(i).objectReferenceValue as Shader)
+                .Where(shader => shader != null)
+                .ToList();
+
+            foreach (var name in requiredNames)
+            {
+                var shader = Shader.Find(name);
+                if (shader == null) throw new System.Exception($"실행 필수 셰이더를 찾지 못했다: {name}");
+                if (existing.Contains(shader)) continue;
+
+                included.InsertArrayElementAtIndex(included.arraySize);
+                included.GetArrayElementAtIndex(included.arraySize - 1).objectReferenceValue = shader;
+                existing.Add(shader);
+            }
+
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[waifu] 런타임 VRM 셰이더 {requiredNames.Length}개 보존");
         }
 
         /// <summary>
@@ -83,17 +137,28 @@ namespace WaifuAvatar.Editor
         public static void BuildWindows()
         {
             ApplyPlayerSettings();
-            if (!File.Exists(ScenePath)) CreateScene();
+            // 이 씬은 코드가 단일 출처다. 파일이 이미 있어도 다시 만들어 새 컴포넌트가
+            // 빌드에서 빠지거나 사라진 스크립트 참조가 남는 일을 막는다.
+            CreateScene();
 
-            var output = Path.Combine(Directory.GetCurrentDirectory(), "Build", "WaifuAvatar.exe");
-            Directory.CreateDirectory(Path.GetDirectoryName(output) ?? ".");
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var buildDirectory = Path.GetFullPath(Path.Combine(projectRoot, "Build"));
+            if (!buildDirectory.StartsWith(projectRoot + Path.DirectorySeparatorChar))
+                throw new System.Exception($"빌드 정리 경로가 프로젝트 밖이다: {buildDirectory}");
+
+            // 기존 출력 위에 증분 빌드했을 때 level0이 섞여 플레이어가
+            // "Position out of bounds"로 네이티브 크래시한 실측 회귀가 있었다.
+            // Build는 생성물이라 매번 깨끗이 만들고, 사용자 파일은 이 폴더에 두지 않는다.
+            if (Directory.Exists(buildDirectory)) Directory.Delete(buildDirectory, true);
+            Directory.CreateDirectory(buildDirectory);
+            var output = Path.Combine(buildDirectory, "WaifuAvatar.exe");
 
             var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
             {
                 scenes = new[] { ScenePath },
                 locationPathName = output,
                 target = BuildTarget.StandaloneWindows64,
-                options = BuildOptions.None
+                options = BuildOptions.CleanBuildCache
             });
 
             var summary = report.summary;
@@ -136,6 +201,9 @@ namespace WaifuAvatar.Editor
                 File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
                 count++;
             }
+            var manifest = Path.Combine(source, "manifest.json");
+            if (File.Exists(manifest))
+                File.Copy(manifest, Path.Combine(target, "manifest.json"), true);
             Debug.Log($"[waifu] 모션 {count}개 복사 — {target}");
         }
 
@@ -164,11 +232,30 @@ namespace WaifuAvatar.Editor
             shellObject.AddComponent<UniWindowController>();
             shellObject.AddComponent<DesktopWindow>();
             shellObject.AddComponent<AvatarDragger>();
+
+            // Phase 4 존재감 컴포넌트. **여기 넣지 않으면 기능이 통째로 죽는다** —
+            // AvatarShell 은 FindAnyObjectByType 으로 이것들을 찾는데, 씬에 없으면
+            // null 이 돌아오고 설정만 있고 아무 일도 일어나지 않는 상태가 된다.
+            // 조용히 꺼지는 종류의 실패라 눈으로는 알아채기 어렵다.
+            shellObject.AddComponent<WindowSitter>();
+            shellObject.AddComponent<Roamer>();
+            var ambient = shellObject.AddComponent<AmbientLights>();
+
             var shell = shellObject.AddComponent<AvatarShell>();
 
             // 아바타가 설 자리. 셸이 여기에 모델을 붙인다.
             var root = new GameObject("AvatarRoot");
             root.transform.position = Vector3.zero;
+
+            // 주변광 조명 넷. 화면 네 변의 색을 각각 받는다. 하나도 없으면
+            // AmbientLights 가 화면을 아예 읽지 않는다 — 쓸 곳 없는 캡처는 하지 않는다.
+            var lights = CreateAmbientLights(root.transform);
+            var ambientSerialized = new SerializedObject(ambient);
+            ambientSerialized.FindProperty("_top").objectReferenceValue = lights[0];
+            ambientSerialized.FindProperty("_bottom").objectReferenceValue = lights[1];
+            ambientSerialized.FindProperty("_left").objectReferenceValue = lights[2];
+            ambientSerialized.FindProperty("_right").objectReferenceValue = lights[3];
+            ambientSerialized.ApplyModifiedPropertiesWithoutUndo();
 
             // 직렬화 필드를 코드로 잇는다. 안 이으면 셸이 자기 transform 을 쓰는데,
             // 거기엔 UniWindowController 가 붙어 있어 모델과 창 제어가 한 오브젝트에 섞인다.
@@ -182,6 +269,41 @@ namespace WaifuAvatar.Editor
 
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             Debug.Log($"[waifu] 씬 생성 — {ScenePath}");
+        }
+
+        /// <summary>
+        /// 아바타를 둘러싸는 조명 넷 (위·아래·왼·오른쪽).
+        ///
+        /// 방향광이 아니라 **점광**이다. 방향광 넷은 어느 방향에서 오든 세기가 같아
+        /// 화면 한쪽만 밝을 때의 방향감이 안 나온다. 세기와 색은 실행 중에
+        /// <see cref="AmbientLights"/> 가 덮어쓰므로 여기서는 자리만 잡는다.
+        /// </summary>
+        static Light[] CreateAmbientLights(Transform parent)
+        {
+            var placements = new (string Name, Vector3 Position)[]
+            {
+                ("Ambient Top", new Vector3(0f, 2.6f, -0.6f)),
+                ("Ambient Bottom", new Vector3(0f, -0.6f, -0.6f)),
+                ("Ambient Left", new Vector3(-1.4f, 1.2f, -0.6f)),
+                ("Ambient Right", new Vector3(1.4f, 1.2f, -0.6f)),
+            };
+
+            var lights = new Light[placements.Length];
+            for (var i = 0; i < placements.Length; i++)
+            {
+                var go = new GameObject(placements[i].Name);
+                go.transform.SetParent(parent, false);
+                go.transform.localPosition = placements[i].Position;
+
+                var light = go.AddComponent<Light>();
+                light.type = LightType.Point;
+                light.range = 6f;
+                // 기본값은 은은하게. 주변광이 꺼져 있어도 모델이 새까맣지 않아야 한다.
+                light.intensity = 0.35f;
+                light.shadows = LightShadows.None;
+                lights[i] = light;
+            }
+            return lights;
         }
     }
 }

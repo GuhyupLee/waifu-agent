@@ -99,7 +99,13 @@ export const IDLE_GESTURES: readonly string[] = [
   'sleepy'
 ]
 
-/** 자율 행동을 켤지. 설정과 조용한 시간을 함께 본다. */
+/**
+ * 자율 행동을 켤지. **설정 하나만 본다.**
+ *
+ * 예전 주석은 "조용한 시간을 함께 본다" 고 했지만 그런 코드는 여기에도 호출부에도
+ * 없다. 조용한 시간(`isQuiet`)은 알림·리마인더 경로만 본다 — 유휴 몸짓은 소리를
+ * 내지 않으므로 시간대로 막을 이유가 없다.
+ */
 export function autonomyEnabled(config: WaifuConfig): boolean {
   return config.avatar.ambientMotion
 }
