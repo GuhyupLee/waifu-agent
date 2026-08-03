@@ -2,6 +2,7 @@
   "name": "waifu-agent",
   "version": "0.1.0",
   "description": "Desktop VRM agent driven by Claude Code / Codex CLI (no API keys)",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "./out/main/index.js",
   "type": "module",
   "private": true,
@@ -27,6 +28,16 @@
       "out/**/*",
       "resources/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICE",
+        "to": "NOTICE"
+      }
     ]
   },
   "dependencies": {

@@ -1,0 +1,87 @@
+waifu-agent NOTICE
+==================
+
+Project copyright
+-----------------
+
+Copyright (c) 2026 Senarin_.
+
+License transition
+------------------
+
+The last waifu-agent revision released solely under the MIT License is:
+
+    d1b09c8ce52d3d85ec80643149199a145a5581bc
+
+The MIT grants already made for that revision and earlier revisions remain in
+effect. Beginning with the revision that adds this notice, waifu-agent-authored
+code and assets, including the VRMA files under resources/motions, and any
+Mate-Engine-derived combined work are distributed under the MateEngine Pro
+License v2.1 in LICENSE unless a file or third-party notice states otherwise.
+
+The public source repository is:
+
+    https://github.com/GuhyupLee/waifu-agent
+
+Mate-Engine source attribution and import register
+--------------------------------------------------
+
+Upstream project: Mate-Engine
+Upstream source: https://github.com/shinyflvre/Mate-Engine
+Release tag: Public-Release-X3.3.0
+Release commit: fb33b3e5f8636365c2dec48f88626394cf4bb33c
+Release tree: fcd227bb0888a44c2e815702f06690d93876c6d3
+Release URL: https://github.com/shinyflvre/Mate-Engine/releases/tag/Public-Release-X3.3.0
+Release published: 2026-01-19T16:08:48Z
+License file blob: 7049c5ecc0bdb321f82a8a001bc054a27528b405
+Copyright: © 2025 Johnson Jason and contributors. All rights reserved.
+MateProv2 license text for upstream files to which it applies: MateEngine Pro
+License v2.1, reproduced in full in LICENSE
+
+No Mate-Engine source code or assets had been copied into waifu-agent when this
+license transition was prepared on 2026-08-03. The first commit that imports or
+adapts Mate-Engine source must replace the empty register below with the exact
+upstream paths, local paths, and modifications in that same commit.
+
+| Upstream path | Local path | Modifications | First import commit |
+| --- | --- | --- | --- |
+| None at license transition | None | None | None |
+
+Upstream license ambiguity
+--------------------------
+
+The Mate-Engine X3.3.0 README describes the application license as
+"Mixed — GNU AGPL v3 & MateProv2 License." The upstream repository does not
+provide the GNU AGPL v3 text or a file-by-file map between AGPL and MateEngine
+Pro components. The MateEngine Pro License v2.1 in this repository licenses
+waifu-agent-authored work; it does not establish the license of an upstream
+Mate-Engine file.
+
+Before importing any Mate-Engine source, the importer must obtain written
+confirmation of that file's license or establish it from an authoritative
+file-level notice. AGPL-covered source must not be imported until its
+compatibility and corresponding obligations have been reviewed and recorded.
+
+Mate-Engine assets
+------------------
+
+Mate-Engine models, motions, audio, textures, fonts, icons, and UI assets are
+not distributed with waifu-agent. They remain subject to Shiny's separate asset
+terms. Local personal or non-commercial use must retain attribution to Shiny.
+
+Bundled third-party software
+----------------------------
+
+Bundled third-party software remains under its original license. The
+MateEngine Pro License v2.1 does not replace these notices.
+
+| Component | Version | License notice |
+| --- | --- | --- |
+| UniGLTF | 0.131.2 | unity/WaifuAvatar/Packages/com.vrmc.gltf/LICENSE.md |
+| UniVRM / VRM 0.x | 0.131.2 | unity/WaifuAvatar/Packages/com.vrmc.univrm/LICENSE.md |
+| VRM 1.0 | 0.131.2 | unity/WaifuAvatar/Packages/com.vrmc.univrm/LICENSE.md |
+| MToon | 0.131.2 distribution | unity/WaifuAvatar/Packages/com.vrmc.univrm/MToon/LICENSE |
+| UniWindowController | 0.9.8 | unity/WaifuAvatar/Assets/Kirurobo/UniWindowController/LICENSE.md |
+
+JavaScript and build dependencies retain the licenses recorded by their
+upstream packages and package-lock.json.
