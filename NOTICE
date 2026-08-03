@@ -1,0 +1,140 @@
+waifu-agent NOTICE
+==================
+
+Project copyright
+-----------------
+
+Copyright (c) 2026 Senarin_.
+
+License transition
+------------------
+
+The last waifu-agent revision released solely under the MIT License is:
+
+    d1b09c8ce52d3d85ec80643149199a145a5581bc
+
+The MIT grants already made for that revision and earlier revisions remain in
+effect. Beginning with the revision that adds this notice, waifu-agent-authored
+code and assets, including the VRMA files under resources/motions, and any
+Mate-Engine-derived combined work are distributed under the MateEngine Pro
+License v2.1 in LICENSE unless a file or third-party notice states otherwise.
+
+The public source repository is:
+
+    https://github.com/GuhyupLee/waifu-agent
+
+Mate-Engine source attribution and import register
+--------------------------------------------------
+
+Upstream project: Mate-Engine
+Upstream source: https://github.com/shinyflvre/Mate-Engine
+Release tag: Public-Release-X3.3.0
+Release commit: fb33b3e5f8636365c2dec48f88626394cf4bb33c
+Release tree: fcd227bb0888a44c2e815702f06690d93876c6d3
+Release URL: https://github.com/shinyflvre/Mate-Engine/releases/tag/Public-Release-X3.3.0
+Release published: 2026-01-19T16:08:48Z
+License file blob: 7049c5ecc0bdb321f82a8a001bc054a27528b405
+Copyright: © 2025 Johnson Jason and contributors. All rights reserved.
+MateProv2 license text for upstream files to which it applies: MateEngine Pro
+License v2.1, reproduced in full in LICENSE
+
+Every row records an adaptation, not a file copy: no Mate-Engine file is
+reproduced verbatim. That does not by itself change the licence — adapted code
+is still a derivative work of whichever licence governs the original, and the
+rows below are distributed under the MateEngine Pro License v2.1 in LICENSE.
+
+The upstream files adapted here carry no file-level licence header, and the
+upstream README declares a mixed application licence. See "Upstream license
+ambiguity" below for how this project resolved that.
+
+Window and taskbar perching (Phase 4)
+`````````````````````````````````````
+
+| Upstream path | Local path | Modifications |
+| --- | --- | --- |
+| `Assets/MATE ENGINE - Scripts/Settings/MonitorHelper.cs` | `unity/WaifuAvatar/Assets/WaifuAvatar/Scripts/Window/MonitorGeometry.cs`, `.../Window/DesktopWindows.cs` | Split the taskbar-edge derivation (monitor rect minus work area) from its P/Invoke so it can be unit tested. Return which edge the taskbar occupies instead of only its rect, and allow perching only on a bottom-docked taskbar. Added a full-screen-coverage test. `GetScaleForWindow` became `DesktopWindows.GetScale`. |
+| `Assets/MATE ENGINE - Scripts/AvatarHandlers/AvatarWindowHandler.cs` | `.../Window/WindowSitPolicy.cs`, `.../Window/DesktopWindows.cs`, `.../Window/WindowSitter.cs` | Split one ~1000-line MonoBehaviour into a scene-free policy class, a Windows-only enumeration layer, and a thin glue component. Kept the snap/unsnap safeguards (drag hold time, drag distance, probe radius, latch ticks, unsnap cooldown, guard zone, cursor-delta unsnap) and the invisible-window filters (layered/click-through/tool/no-activate/colour-key/low-alpha, cloaked, shell classes, owned windows). Replaced the seat-anchor bisection and one-frame recalibration with a settle window that measures the live seat offset then freezes it. Dropped the depth-only occluder quads entirely. Replaced Animator bool parameters with VRMA clip requests. Folded the taskbar in as one more candidate rather than a separate code path. |
+| `Assets/MATE ENGINE - Scripts/AvatarHandlers/AvatarTaskbarController.cs` | `.../Window/MonitorGeometry.cs`, `.../Window/WindowSitter.cs` | Absorbed into the same candidate list as ordinary windows. Uses the monitor/work-area difference instead of `SHAppBarMessage(ABM_GETTASKBARPOS)`, which reports a rect even when the taskbar is auto-hidden. Dropped the bone-attachment and spawn/despawn scaling, which served a Mate-Engine prop feature this project does not have. |
+
+Drag inertia (sway)
+```````````````````
+
+| Upstream path | Local path | Modifications |
+| --- | --- | --- |
+| `Assets/MATE ENGINE - Scripts/AvatarHandlers/AvatarSwayController.cs` | `unity/WaifuAvatar/Assets/WaifuAvatar/Scripts/Avatar/SwayModel.cs` | Kept the signal chain (window velocity, low-pass filter, spring, opposite-phase limb lag, asymmetric weight fade, clamped lean) and the lean/limb limits. Converted the input from pixels-per-frame to pixels-per-second so the same gesture leans the same amount at any frame rate. Replaced the explicit-Euler spring with this project's implicit-Euler `Spring`, which does not diverge when the frame delta spikes. Removed the direct `localRotation` writes and inverse-quaternion cleanup: `PoseOverlay` already owns additive-overlay bookkeeping, so this class only produces angles. Dropped the animator-state whitelist, the global/local rotation-space switch, and the invert toggles, none of which this project exposes. |
+
+Within-monitor roaming
+``````````````````````
+
+| Upstream path | Local path | Modifications |
+| --- | --- | --- |
+| `Assets/MATE ENGINE - Scripts/AvatarHandlers/AvatarLocomotionController.cs` | `unity/WaifuAvatar/Assets/WaifuAvatar/Scripts/Window/RoamPlanner.cs`, `.../Window/Roamer.cs` | Kept the three rules that matter: walk only while in base idle and stop immediately otherwise; measure screen edges against the avatar's rendered silhouette rather than the transparent window rect; turn away when close to an edge. Split the decision rules into a scene-free planner with an injectable RNG. Replaced the uniform-random walk interval with an exponential dwell and a floor, matching this project's animation-statistics rule. Added cursor avoidance (asymmetric, so an avatar already beside the cursor can still walk away from it) and clamped the planned distance to the remaining room so the avatar cannot march into a wall. Walk within the work area rather than the full virtual screen, so it does not cover the taskbar. Dropped the Steam/animator-parameter wiring, the debug GUI overlay, and the multi-monitor traversal — cross-monitor movement already exists in `src/main/roaming.ts`. |
+
+Desktop ambient light
+`````````````````````
+
+| Upstream path | Local path | Modifications |
+| --- | --- | --- |
+| `Assets/MATE ENGINE - Scripts/Tools/DesktopAmbientProbe.cs` | `unity/WaifuAvatar/Assets/WaifuAvatar/Scripts/Avatar/AmbientMix.cs`, `.../Window/DesktopAmbient.cs`, `.../Window/AmbientLights.cs` | Kept the two colour decisions that matter: discard sampled value and derive light intensity from saturation, so a dark desktop dims the light instead of blacking it out; and damp hue the short way around the colour wheel so a red-to-orange change does not sweep through green and blue. Kept the downscaled `StretchBlt` capture, the four edge bands, and excluding the avatar's own window from the average. Split the colour maths into a scene-free class. Damp every frame rather than only on capture frames, so the light does not step at the sample rate. Return mid-grey rather than black when the avatar covers a whole band. Skip capture entirely when no lights are wired up. Default off, with the capture behaviour spelled out in the settings screen. |
+
+Not imported: `Assets/MATE ENGINE - Scripts/APIs/WinApi.cs`. That file is
+Kirurobo's CC0 Windows API wrapper rather than Mate-Engine code; the P/Invoke
+declarations in `DesktopWindows.cs` were written against the Microsoft Win32
+documentation instead.
+
+Upstream license ambiguity
+--------------------------
+
+The Mate-Engine X3.3.0 README describes the application license as
+"Mixed — GNU AGPL v3 & MateProv2 License." The upstream repository does not
+provide the GNU AGPL v3 text or a file-by-file map between AGPL and MateEngine
+Pro components. The MateEngine Pro License v2.1 in this repository licenses
+waifu-agent-authored work; it does not establish the license of an upstream
+Mate-Engine file.
+
+Resolution recorded on 2026-08-03 by the waifu-agent copyright holder: this
+project treats the adapted Mate-Engine source as governed by the MateEngine Pro
+License v2.1 and complies with that license in full — complete corresponding
+source published under the same license, on a publicly accessible non-commercial
+code host, with no paywall, registration, or monetization, and no distribution
+on commercial or binary platforms. The import register above records every
+adapted file and every modification.
+
+This is a decision made without written confirmation from the upstream copyright
+holder, and it is recorded here rather than assumed. The residual risk is that
+some adapted file was in fact AGPL v3, which would add its own corresponding
+source and notice obligations. That risk is accepted knowingly; it is not
+resolved. If written confirmation is later obtained, or an authoritative
+file-level notice is published upstream, update this section and the register to
+match rather than leaving this paragraph standing.
+
+The MateEngine Pro License v2.1 terms this project must keep meeting are §2
+(source disclosure, same license, non-commercial public host, no paywall), §3
+(no commercial or binary distribution platform), §5 (no commercial use, sale,
+sponsorship gating, or paid access), and §6 (retain the original copyright
+notice and license text). Breaching any of them terminates the granted rights
+under §8.
+
+Mate-Engine assets
+------------------
+
+Mate-Engine models, motions, audio, textures, fonts, icons, and UI assets are
+not distributed with waifu-agent. They remain subject to Shiny's separate asset
+terms. Local personal or non-commercial use must retain attribution to Shiny.
+
+Bundled third-party software
+----------------------------
+
+Bundled third-party software remains under its original license. The
+MateEngine Pro License v2.1 does not replace these notices.
+
+| Component | Version | License notice |
+| --- | --- | --- |
+| UniGLTF | 0.131.2 | unity/WaifuAvatar/Packages/com.vrmc.gltf/LICENSE.md |
+| UniVRM / VRM 0.x | 0.131.2 | unity/WaifuAvatar/Packages/com.vrmc.univrm/LICENSE.md |
+| VRM 1.0 | 0.131.2 | unity/WaifuAvatar/Packages/com.vrmc.univrm/LICENSE.md |
+| MToon | 0.131.2 distribution | unity/WaifuAvatar/Packages/com.vrmc.univrm/MToon/LICENSE |
+| UniWindowController | 0.9.8 | unity/WaifuAvatar/Assets/Kirurobo/UniWindowController/LICENSE.md |
+
+JavaScript and build dependencies retain the licenses recorded by their
+upstream packages and package-lock.json.

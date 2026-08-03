@@ -175,8 +175,74 @@ export interface PresenceSettings {
   touch: boolean
   /** 잡아 끌 때 전용 모션을 쓴다. 끄면 자세 그대로 끌린다. */
   dragMotion: boolean
+  /**
+   * 잡아 끄는 동안 관성으로 몸이 기운다.
+   *
+   * `avatar.swayStrength` 와 짝이다 — 저쪽은 내장 렌더러, 이쪽은 Unity 셸이 읽는다.
+   * `avatar.ambientMotion` 과 `presence.idle` 이 갈려 있는 것과 같은 이유로,
+   * 두 렌더러가 같은 값을 공유하면 한쪽만 지원하는 항목이 생길 때 함께 굳는다.
+   */
+  dragSway: {
+    enabled: boolean
+    /** 0 이면 기울지 않는다. 1 이 기본, 2 면 과장된다. */
+    strength: number
+  }
   /** 창이 화면 밖으로 나가지 않게 붙잡는다. */
   clampToScreen: boolean
+  /**
+   * 잡아 끌어 다른 창의 윗변에 올리면 거기 걸터앉는다 (Phase 4).
+   *
+   * **Windows 전용이다.** 다른 OS 에서는 셸이 이 설정을 무시하고 기능만 꺼진다.
+   * 창 목록을 훑는 일은 Unity 셸 안에서만 일어나고, 창 제목이나 프로세스 이름이
+   * 에이전트나 main 으로 넘어가지 않는다 — 아바타가 앉을 자리를 고르는 데 필요한
+   * 것은 사각형뿐이다.
+   */
+  windowSit: {
+    enabled: boolean
+    /** 작업표시줄에도 앉는다. 창에는 앉되 작업표시줄은 가리기 싫은 경우가 있다. */
+    taskbar: boolean
+  }
+  /**
+   * 가끔 화면 안에서 자리를 옮긴다 (Phase 4).
+   *
+   * 모니터를 넘나드는 이동은 `src/main/roaming.ts` 가 이미 하고 있고, 이것은
+   * **같은 모니터 안**의 짧은 이동이다. 작업표시줄과 커서 주변은 피한다.
+   */
+  roam: {
+    enabled: boolean
+    /** 한 자리에 머무는 평균 시간(분). 지수분포라 대부분은 이보다 짧다. */
+    meanDwellMin: number
+  }
+  /**
+   * 화면 가장자리 색으로 아바타 조명을 물들인다 (Phase 4).
+   *
+   * **이것은 "이거 봐줘" 와 다르다.** 읽은 픽셀은 아바타 셸 프로세스 밖으로 나가지
+   * 않는다 — 에이전트에게도, 디스크에도 가지 않는다. 화면을 160×90 으로 줄여 받아
+   * 네 개의 평균 색으로 뭉갠 뒤 버리며, 그 해상도에서는 글자를 읽을 수 없다.
+   * 그래도 화면을 주기적으로 읽는 것은 사실이라 기본값은 꺼짐이다.
+   */
+  ambientLight: {
+    enabled: boolean
+    /** 초당 몇 번 읽나. 높이면 반응이 빠른 대신 CPU 를 계속 쓴다. */
+    sampleHz: number
+    /** 0..1. 클수록 천천히 물든다. 낮으면 화면 전환마다 조명이 번쩍인다. */
+    smoothing: number
+  }
+  /**
+   * 모니터 해상도에 맞춰 아바타 크기를 자동으로 맞춘다.
+   *
+   * 같은 픽셀 크기라도 4K 모니터에서는 물리적으로 절반만 하다. 4K 주 모니터와
+   * FHD 보조 모니터를 섞어 쓰면 한쪽에 맞춘 크기가 다른 쪽에서 어긋난다.
+   * 아바타가 있는 모니터의 세로 해상도를 기준 해상도로 나눈 값을 곱한다.
+   */
+  autoScale: {
+    enabled: boolean
+    /** 이 세로 해상도에서 `avatar.scale` 이 그대로 쓰인다. */
+    referenceHeight: number
+    /** 자동 배율의 상·하한. 세로로 아주 긴 모니터에서 아바타가 화면을 덮지 않게 한다. */
+    min: number
+    max: number
+  }
   /**
    * 오래 두면 잔다.
    *
@@ -565,7 +631,19 @@ export const DEFAULT_CONFIG: WaifuConfig = {
       tracking: { enabled: true, eye: 1, head: 1, body: 0.5 },
       touch: true,
       dragMotion: true,
+      dragSway: { enabled: true, strength: 1 },
       clampToScreen: true,
+      // 기본 꺼짐. 아바타가 남의 창에 달라붙는 것은 취향이 크게 갈리고,
+      // 처음 쓰는 사람에게는 "옮기려는데 자꾸 붙는다" 로 느껴진다.
+      windowSit: { enabled: false, taskbar: true },
+      // 기본 꺼짐. 아바타가 스스로 움직이면 시야에서 사라지거나 작업을 가리는데,
+      // 그게 반가운지 성가신지는 사람마다 갈린다.
+      roam: { enabled: false, meanDwellMin: 1.5 },
+      // 기본 꺼짐. 화면을 주기적으로 읽는 기능은 켜는 사람만 켜야 한다.
+      ambientLight: { enabled: false, sampleHz: 8, smoothing: 0.85 },
+      // 이쪽은 기본 켜짐이다. 끄면 4K 와 FHD 를 섞어 쓸 때 한쪽에서 반드시 어긋나고,
+      // 그건 취향이 아니라 그냥 잘못 보이는 것이다.
+      autoScale: { enabled: true, referenceHeight: 1080, min: 0.5, max: 3 },
       // 기본은 유휴 시간만 본다. 시간대로 재우는 건 사람마다 생활 패턴이 달라
       // 켜는 사람만 켜게 둔다.
       sleep: { enabled: true, afterIdleMin: 20, byClock: false, fromHour: 23, toHour: 7 },
@@ -683,10 +761,16 @@ export interface WaifuApi {
   sendMessage(text: string): void
   interrupt(): void
   respondPermission(id: string, decision: PermissionDecision): void
+  /** 패널 재로딩·재생성 뒤에도 아직 기다리는 승인 카드를 다시 그린다. */
+  listPendingPermissions(): Promise<PermissionRequest[]>
 
   getConfig(): Promise<WaifuConfig>
   setConfig(patch: Partial<WaifuConfig>): Promise<WaifuConfig>
   pickModel(): Promise<string | null>
+  /** 에이전트가 작업 기준점으로 삼을 폴더를 네이티브 선택창으로 고른다. */
+  pickWorkspace(): Promise<string | null>
+  /** 저장된 시작 스냅샷 설정을 전부 적용하도록 앱을 안전하게 다시 띄운다. */
+  restartApp(): Promise<{ ok: boolean; reason?: string }>
 
   /** 에이전트가 바꾼 파일 목록과 되돌리기. */
   listChanges(): Promise<FileChange[]>
@@ -700,7 +784,7 @@ export interface WaifuApi {
   listReminders(): Promise<StoredReminder[]>
   cancelReminder(id: string): Promise<boolean>
 
-  diagnostics(): Promise<Diagnostics>
+  diagnostics(): Promise<Diagnostics | null>
   /** TTS 엔진 버전. 안 떠 있으면 null. */
   pingVoice(url: string): Promise<string | null>
 }
@@ -727,12 +811,27 @@ export interface StoredReminder {
 }
 
 export interface Diagnostics {
+  /** failover까지 반영한 지금 실제로 돌고 있는 백엔드. */
   backend: BackendKind
   sessionId: string | null
   busy: boolean
   motions: number
   activeTasks: number
   memories: number
+  /**
+   * 백엔드 프로세스에 실제로 적용된 시작 스냅샷.
+   *
+   * null이면 저장된 설정이 있더라도 에이전트는 아직 시작되지 않은 것이다. 설정값을
+   * 현재 작업 범위인 것처럼 보여주지 않기 위해 저장 설정과 따로 둔다.
+   */
+  runtime: {
+    configuredBackend: BackendKind
+    cwd: string
+    permissionMode: PermissionMode
+    workspaces: string[]
+  } | null
+  /** 저장 설정과 runtime 스냅샷이 달라 명시적인 재시작이 필요한가. */
+  backendRestartRequired: boolean
 }
 
 /** 되돌리기 UI 가 보여줄 한 건. */
@@ -761,11 +860,16 @@ export const IPC = {
   interrupt: 'agent:interrupt',
   /** panel -> main, 권한 승인 응답 */
   permissionRespond: 'permission:respond',
+  /** panel -> main (invoke), 아직 응답하지 않은 승인 요청 복구 */
+  permissionList: 'permission:list',
   /** panel -> main (invoke), 설정 읽기/쓰기 */
   configGet: 'config:get',
   configSet: 'config:set',
   /** panel -> main (invoke), VRM/FBX 파일 선택 */
   pickModel: 'avatar:pick-model',
+  /** panel -> main (invoke), 작업 폴더 선택과 앱 재시작 */
+  pickWorkspace: 'permission:pick-workspace',
+  appRestart: 'app:restart',
   /** panel -> main (invoke), 파일 변경 이력과 되돌리기 */
   changesList: 'safety:list',
   changesUndo: 'safety:undo',

@@ -54,9 +54,11 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        // 두 HTML 이 root 바로 아래 있으므로 out/renderer/{avatar,panel}.html 로 평평하게 나온다.
+        // HTML 이 root 바로 아래 있으므로 out/renderer/*.html 로 평평하게 나온다.
         input: {
           avatar: r('src/renderer/avatar.html'),
+          companion: r('src/renderer/companion.html'),
+          media: r('src/renderer/media.html'),
           panel: r('src/renderer/panel.html')
         }
       }

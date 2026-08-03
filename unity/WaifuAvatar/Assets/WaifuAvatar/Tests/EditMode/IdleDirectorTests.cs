@@ -4,6 +4,49 @@ using WaifuAvatar.Avatar;
 
 namespace WaifuAvatar.Tests
 {
+    public class MotionIdlePolicyTests
+    {
+        [Test]
+        public void 드래그처럼_busy인_동안은_idle을_막는다()
+        {
+            Assert.IsTrue(MotionIdlePolicy.BlocksIdle(
+                busy: true,
+                hasCurrentClip: true,
+                currentLoops: true,
+                oneShotReturnRequested: false));
+        }
+
+        [Test]
+        public void 재생_중인_원샷은_idle_타이머가_덮지_않는다()
+        {
+            Assert.IsTrue(MotionIdlePolicy.BlocksIdle(
+                busy: false,
+                hasCurrentClip: true,
+                currentLoops: false,
+                oneShotReturnRequested: false));
+        }
+
+        [Test]
+        public void 원샷이_끝나_복귀를_요청한_뒤에는_idle을_허용한다()
+        {
+            Assert.IsFalse(MotionIdlePolicy.BlocksIdle(
+                busy: false,
+                hasCurrentClip: true,
+                currentLoops: false,
+                oneShotReturnRequested: true));
+        }
+
+        [Test]
+        public void 일반_루프는_기존_idle_타이머를_유지한다()
+        {
+            Assert.IsFalse(MotionIdlePolicy.BlocksIdle(
+                busy: false,
+                hasCurrentClip: true,
+                currentLoops: true,
+                oneShotReturnRequested: false));
+        }
+    }
+
     public class IdleDirectorTests
     {
         static IdleDirector Make(params float[] sequence)

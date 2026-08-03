@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { once } from 'node:events'
+import { connect } from 'node:net'
 import { ControlServer } from '../src/main/control/server'
 
 const running = new Set<ControlServer>()
@@ -52,6 +54,24 @@ describe('ControlServer 요청 인증과 응답', () => {
     }
     expect(handler).not.toHaveBeenCalled()
     expect(server.token).not.toBe('wrong')
+  })
+
+  it('본문을 덜 보낸 인증 socket도 stop을 붙잡거나 main을 죽이지 못한다', async () => {
+    const { server, port, handler } = await start()
+    const socket = connect(port, '127.0.0.1')
+    const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()))
+    socket.on('error', () => {
+      // stop()이 partial request를 강제로 끊으므로 클라이언트 쪽 ECONNRESET은 정상이다.
+    })
+    await once(socket, 'connect')
+    socket.write(
+      `POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nx-waifu-token: ${server.token}\r\n` +
+        'Content-Length: 100\r\n\r\n{'
+    )
+
+    await expect(server.stop()).resolves.toBeUndefined()
+    await closed
+    expect(handler).not.toHaveBeenCalled()
   })
 
   it('인증돼도 POST가 아니면 405, 깨진 JSON이면 400이다', async () => {

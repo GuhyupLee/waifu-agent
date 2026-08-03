@@ -5,11 +5,13 @@ import type { TabProps } from '../Settings'
 
 const LABELS: Record<PermissionMode, { name: string; desc: string }> = {
   readonly: { name: '대화만 하기', desc: '파일을 바꾸지 않는다. 읽고 답하기만 한다.' },
-  guarded: { name: '도와주기', desc: '바꾸기 전에 반드시 확인한다.' },
-  auto: { name: '맡겨두기', desc: '허용한 폴더 안에서 묻지 않고 작업한다.' }
+  guarded: { name: '도와주기', desc: '확인 절차나 작업 폴더 샌드박스로 실행 범위를 줄인다.' },
+  auto: { name: '맡겨두기', desc: '승인 질문 없이 작업한다. 백엔드에 따라 폴더 밖 접근도 열릴 수 있다.' }
 }
 
 export function PermissionTab({ config, patch }: TabProps): React.JSX.Element {
+  const [choosingWorkspace, setChoosingWorkspace] = useState(false)
+
   return (
     <>
       <Section title="기본 권한">
@@ -27,9 +29,15 @@ export function PermissionTab({ config, patch }: TabProps): React.JSX.Element {
           </label>
         ))}
 
-        {config.permission.mode === 'auto' && (
+        {config.permission.mode === 'auto' && config.backend.active !== 'codex' && (
           <div style={S.warn}>
             묻지 않고 실행한다. 허용 폴더를 좁게 잡아두는 걸 권한다.
+          </div>
+        )}
+        {config.permission.mode === 'auto' && config.backend.active === 'codex' && (
+          <div style={S.warn}>
+            Codex의 맡겨두기는 danger-full-access다. 작업 폴더 밖 접근도 기술적으로 막지 않고,
+            명령마다 다시 물어보는 경로도 없다.
           </div>
         )}
         {config.backend.active === 'codex' && config.permission.mode === 'guarded' && (
@@ -39,14 +47,14 @@ export function PermissionTab({ config, patch }: TabProps): React.JSX.Element {
         )}
 
         <div style={{ ...S.hint, marginTop: '10px' }}>
-          되돌리기 어려운 명령(삭제, 덮어쓰기, git reset 등)은 어느 모드에서든 항상 물어본다.
-          화면·클립보드 공유도 마찬가지다.
+          Claude Code는 삭제·덮어쓰기 같은 되돌리기 어려운 명령과 화면·클립보드 공유를
+          별도로 확인한다. Codex는 명령별 승인 경로가 없어 같은 보장을 제공하지 않는다.
         </div>
       </Section>
 
-      <Section title="작업 허용 폴더">
+      <Section title="작업 기준 폴더">
         <Field
-          label="줄바꿈으로 구분. 비우면 홈 폴더에서 시작한다."
+          label="첫 줄이 작업 기준 폴더다. 비워두면 에이전트를 시작하지 않는다."
           multiline
           value={config.permission.workspaces.join('\n')}
           onCommit={(v) =>
@@ -58,6 +66,33 @@ export function PermissionTab({ config, patch }: TabProps): React.JSX.Element {
             })
           }
         />
+        <button
+          style={{ ...S.ghost, marginTop: '8px' }}
+          disabled={choosingWorkspace}
+          onClick={() => {
+            setChoosingWorkspace(true)
+            void window.waifu.pickWorkspace().then((path) => {
+              setChoosingWorkspace(false)
+              if (!path) return
+              patch({
+                permission: {
+                  ...config.permission,
+                  workspaces: [
+                    path,
+                    ...config.permission.workspaces.filter(
+                      (workspace) => workspace.toLocaleLowerCase() !== path.toLocaleLowerCase()
+                    )
+                  ]
+                }
+              })
+            }, () => setChoosingWorkspace(false))
+          }}
+        >
+          {choosingWorkspace ? '폴더를 여는 중…' : '폴더 선택창 열기'}
+        </button>
+        <div style={{ ...S.hint, marginTop: '8px' }}>
+          저장한 범위는 메인 화면의 ‘새 설정 적용’을 눌러야 현재 에이전트에 반영된다.
+        </div>
       </Section>
 
       <Section title="묻지 않고 통과시킬 툴">

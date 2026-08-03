@@ -23,7 +23,7 @@ const CORS: Record<string, string> = {
   'Cross-Origin-Resource-Policy': 'cross-origin'
 }
 
-export function allowAssetPath(path: string): void {
+function allowAssetPath(path: string): void {
   allowed.add(normalize(resolve(path)))
 }
 

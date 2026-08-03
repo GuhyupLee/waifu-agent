@@ -99,6 +99,13 @@ namespace WaifuAvatar.Avatar
         public float Weight;
         public float Yaw;
         public float Pitch;
+        /// <summary>
+        /// 상체가 커서 쪽으로 도는 정도. `tracking.body` 설정이 여기까지 온다.
+        ///
+        /// 예전에는 <see cref="PresenceDirector"/> 가 이 값을 계산해 두고도 오버레이에
+        /// 넘기지 않아, 설정 화면의 '상체' 슬라이더가 아무것도 바꾸지 못했다.
+        /// </summary>
+        public float BodyYaw;
         /// <summary>모션이 재생 중인가. 재생 중이면 머리 추적을 훨씬 약하게 얹는다.</summary>
         public bool MotionPlaying;
     }
@@ -133,8 +140,11 @@ namespace WaifuAvatar.Avatar
 
             return new OverlayRotations
             {
-                Spine = new Vector3(breath * 0.020f + swayX * 0.4f, swayX * 0.5f, swayZ * 0.5f),
-                Chest = new Vector3(breath * 0.014f, 0f, swayZ * 0.3f),
+                // 상체는 고개보다 훨씬 덜 돈다. 같은 각도로 돌리면 몸 전체가
+                // 커서를 따라 도는 로봇이 된다. 척추와 가슴에 나눠 얹어야
+                // 한 마디만 꺾인 것처럼 보이지 않는다.
+                Spine = new Vector3(breath * 0.020f + swayX * 0.4f, swayX * 0.5f + input.BodyYaw * 0.6f * track, swayZ * 0.5f),
+                Chest = new Vector3(breath * 0.014f, input.BodyYaw * 0.4f * track, swayZ * 0.3f),
                 // 들이쉬면 어깨가 조금 올라간다. 가슴만 움직이면 풍선처럼 보인다.
                 LeftShoulder = new Vector3(0f, 0f, -breath * 0.030f),
                 RightShoulder = new Vector3(0f, 0f, breath * 0.030f),

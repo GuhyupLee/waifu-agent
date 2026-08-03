@@ -160,6 +160,32 @@ function legCurl(state, side, amount, depth = 1) {
   aimBone(state, `${prefix}Foot`, [deg(-25 * depth), 0, 0], amount)
 }
 
+/**
+ * 걸터앉은 하체. 고관절을 접어 허벅지를 수평에 두고, 무릎을 거의 같은 각도로
+ * 반대로 접어 정강이를 수직으로 떨어뜨린다.
+ *
+ * `legCurl` 로는 이 자세가 나오지 않는다. 저건 웅크리기라 무릎 굽힘이 고관절
+ * 굽힘의 두 배쯤 되고, 그러면 정강이가 뒤로 접혀 발이 엉덩이 쪽으로 온다.
+ *
+ * 좌우 각도를 2° 어긋나게 둔 것은 의도적이다. 완전 대칭인 다리는 마네킹으로
+ * 보이고, 정강이가 정확히 겹치면 서로 파고든 것처럼 렌더링된다.
+ */
+function sitPose(state, amount = 1) {
+  // -90/-88 인 이유: 골반이 뒤로 눕는 만큼 허벅지도 같이 뒤로 끌려간다.
+  // 실측(scripts/inspect-vrma-pose.mjs)에서 -86 은 수평 대비 78° 로 나왔다.
+  aimBone(state, 'leftUpperLeg', [deg(-90), deg(2), deg(-5)], amount)
+  aimBone(state, 'leftLowerLeg', [deg(86), 0, 0], amount)
+  aimBone(state, 'leftFoot', [deg(-14), 0, deg(-2)], amount)
+  aimBone(state, 'rightUpperLeg', [deg(-88), deg(-2), deg(5)], amount)
+  aimBone(state, 'rightLowerLeg', [deg(88), 0, 0], amount)
+  aimBone(state, 'rightFoot', [deg(-12), 0, deg(2)], amount)
+
+  // 골반은 조금만 내린다. 화면 위치는 WindowSitter 가 좌석 점을 실측해 창째로
+  // 맞추므로 여기서 크게 내릴 이유가 없고, 많이 내리면 키 큰 모델의 정강이가
+  // 투명 창 아래로 빠져나가 잘린다.
+  state.hips[1] -= 0.08 * amount
+}
+
 function baseState(u, options = {}) {
   const phase = options.phase ?? 0
   const energy = options.energy ?? 1
@@ -571,6 +597,74 @@ const MOTIONS = [
     addBone(s, 'spine', deg(-8) * a, 0, 0)
     addBone(s, 'head', deg(-8) * a, 0, 0)
   }, { phase: 0.6, energy: 1.3 })),
+  // 창 윗변·작업표시줄에 걸터앉기 (Phase 4). 셸이 `sit` 접두사로 골라 쓴다.
+  //
+  // 걸터앉기의 관건은 **엉덩이 높이가 아니라 무릎 각도**다. WindowSitter 가 좌석
+  // 점을 실측해 창을 맞추므로 hips 의 절대 높이는 어차피 상쇄된다. 반대로 무릎이
+  // 덜 접히면 창을 뚫고 서 있는 것처럼 보인다. 그래서 고관절 -86°, 무릎 +84° 로
+  // 허벅지를 수평에 두고 정강이를 수직으로 떨어뜨린다.
+  //
+  // 다리를 살짝 벌리고(Z) 좌우 각도를 1~2° 어긋나게 둔 것은 의도적이다 — 완전
+  // 대칭인 다리는 마네킹으로 보이고, 정강이가 서로 파고들기도 한다.
+  define('sit-edge', '걸터앉아 다리 늘어뜨리기', 'sit', 6.8, true, 'relaxed', '창 가장자리에 앉아 정강이를 수직으로 늘어뜨리고 손으로 모서리를 짚는다.', withBase((s, u) => {
+    const sway = Math.sin(TAU * u)
+    sitPose(s, 1)
+    // 앉으면 골반이 뒤로 눕고 허리가 살짝 말린다. 선 자세의 척추 곡선을 그대로
+    // 두면 "공중에 앉은 사람" 이 된다.
+    addBone(s, 'hips', deg(6), deg(1.5) * sway, deg(1.2) * sway)
+    addBone(s, 'spine', deg(-3), deg(1) * sway, 0)
+    addBone(s, 'head', deg(1.5), deg(3) * sway, deg(1.5) * sway)
+    // 손으로 모서리를 짚는다. 팔을 몸 뒤쪽으로 조금 보내야 짚은 것처럼 보인다.
+    // upperArm 의 X 는 **양수가 뒤쪽**이다 — 부호를 반대로 잡으면 팔이 앞으로
+    // 나가 "짚는" 게 아니라 "허공에 손을 뻗은" 자세가 된다. 실측으로 확인했다.
+    arm(s, 'left', [deg(12), deg(-8), deg(-80)], [deg(6), deg(-4), deg(-5)], [deg(-16), 0, deg(-4)], 1)
+    arm(s, 'right', [deg(12), deg(8), deg(80)], [deg(6), deg(4), deg(5)], [deg(-16), 0, deg(4)], 1)
+    handShape(s, 'left', 'open', 0.75)
+    handShape(s, 'right', 'open', 0.75)
+    s.look = [deg(-3), deg(4) * sway, 0]
+  }, { phase: 0.9, energy: 0.5 })),
+
+  define('sit-legs-swing', '걸터앉아 다리 흔들기', 'sit', 5.2, true, 'happy', '앉은 채 두 다리를 반대 위상으로 흔들고 상체가 작게 따라 튄다.', withBase((s, u) => {
+    const swing = Math.sin(TAU * u)
+    sitPose(s, 1)
+    // 좌우 역위상. 같은 위상으로 흔들면 두 다리가 한 덩어리로 보인다.
+    addBone(s, 'leftUpperLeg', deg(9) * swing, 0, 0)
+    addBone(s, 'leftLowerLeg', deg(-14) * swing, 0, 0)
+    addBone(s, 'rightUpperLeg', deg(-9) * swing, 0, 0)
+    addBone(s, 'rightLowerLeg', deg(14) * swing, 0, 0)
+    // 다리가 앞으로 갈 때 상체가 아주 살짝 뒤로 간다. 반작용이 없으면 다리만
+    // 따로 노는 인형처럼 보인다.
+    addBone(s, 'hips', deg(5) - deg(1.6) * swing, 0, deg(2) * swing)
+    addBone(s, 'spine', deg(-2), 0, deg(-2.5) * swing)
+    addBone(s, 'head', deg(1), deg(4) * swing, deg(2) * swing)
+    arm(s, 'left', [deg(10), deg(-7), deg(-78)], [deg(5), deg(-4), deg(-6)], [deg(-14), 0, deg(-4)], 1)
+    arm(s, 'right', [deg(10), deg(7), deg(78)], [deg(5), deg(4), deg(6)], [deg(-14), 0, deg(4)], 1)
+    handShape(s, 'left', 'open', 0.7)
+    handShape(s, 'right', 'open', 0.7)
+    s.hips[1] += 0.006 * Math.sin(TAU * 2 * u)
+    s.look = [deg(-2), deg(5) * swing, 0]
+  }, { phase: 0.3, energy: 0.8 })),
+
+  define('sit-lean-back', '걸터앉아 뒤로 기대기', 'sit', 7.4, true, 'relaxed', '뒤로 짚은 두 팔에 체중을 싣고 고개를 살짝 젖힌 채 느리게 호흡한다.', withBase((s, u) => {
+    const breath = Math.sin(TAU * u)
+    sitPose(s, 1)
+    // 뒤로 기대면 골반이 더 눕고 가슴이 열린다.
+    addBone(s, 'hips', deg(13), deg(1) * breath, 0)
+    addBone(s, 'spine', deg(-7), 0, deg(1.5) * breath)
+    addBone(s, 'chest', deg(-5), 0, 0)
+    addBone(s, 'head', deg(-6) + deg(1.5) * breath, deg(2.5) * breath, 0)
+    // 골반이 뒤로 누운 만큼 허벅지가 같이 끌려 내려간다. 걸터앉은 다리는 모서리에
+    // 얹혀 있으므로 상체가 기울어도 수평을 유지해야 한다 — 그만큼 되접어 준다.
+    addBone(s, 'leftUpperLeg', deg(-13), 0, 0)
+    addBone(s, 'rightUpperLeg', deg(-13), 0, 0)
+    // 팔은 몸 **뒤에서** 곧게 뻗어 모서리를 짚는다. 팔꿈치를 거의 펴야 체중이 실린다.
+    arm(s, 'left', [deg(36), deg(-12), deg(-84)], [deg(3), deg(-2), deg(-2)], [deg(-24), 0, deg(-3)], 1)
+    arm(s, 'right', [deg(36), deg(12), deg(84)], [deg(3), deg(2), deg(2)], [deg(-24), 0, deg(3)], 1)
+    handShape(s, 'left', 'spread', 0.85)
+    handShape(s, 'right', 'spread', 0.85)
+    s.look = [deg(-7), deg(3) * breath, 0]
+  }, { phase: 2.4, energy: 0.4 })),
+
   define('walk', '자연스러운 제자리 걷기', 'locomotion', 1.2, true, 'neutral', '창 이동이 전진을 맡고, 두 발의 접지와 팔·골반의 역위상이 0.6초마다 맞물린다.', withBase((s, u) => {
     const phase = TAU * u
     const sin = Math.sin(phase)

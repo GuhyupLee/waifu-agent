@@ -7,6 +7,8 @@ import { app } from 'electron'
 import type { BackendEvent, BackendKind, PermissionMode } from '@shared/protocol'
 import { ClaudeEventMapper } from './claudeEvents'
 import { NdjsonReader, parseLines } from './ndjson'
+import { terminateProcessTree } from './processTree'
+import type { ProcessTreeTerminator } from './processTree'
 import { cleanEnv } from './types'
 import type { AgentBackend, BackendListener, SessionOpts } from './types'
 
@@ -36,13 +38,19 @@ export class ClaudeCodeBackend implements AgentBackend {
   readonly kind: BackendKind = 'claude-code'
 
   private child: ChildProcessWithoutNullStreams | null = null
-  private readonly reader = new NdjsonReader()
-  private mapper = new ClaudeEventMapper()
+  private readyChild: ChildProcessWithoutNullStreams | null = null
   private readonly listeners = new Set<BackendListener>()
 
   private _sessionId: string | null = null
   private _busy = false
   private opts: SessionOpts | null = null
+  /** 명시적 stop이 진행 중인 interrupt의 재개 spawn을 취소하기 위한 세대. */
+  private stopGeneration = 0
+  private interruptPromise: Promise<void> | null = null
+  private stoppingChild: Promise<void> | null = null
+  private readonly terminating = new WeakSet<ChildProcessWithoutNullStreams>()
+
+  constructor(private readonly terminateChild: ProcessTreeTerminator = terminateProcessTree) {}
 
   get sessionId(): string | null {
     return this._sessionId
@@ -65,13 +73,13 @@ export class ClaudeCodeBackend implements AgentBackend {
 
   async start(opts: SessionOpts): Promise<void> {
     if (this.child) await this.stop()
-    this.opts = opts
-    this.mapper = new ClaudeEventMapper()
+    this.opts = null
 
     // 세션 id 를 우리가 정해두면 중단 후 --resume 으로 되살릴 때 참조할 값이 확실해진다.
     // (재개는 cwd 스코프라 Task 는 cwd 도 같이 기억해야 한다.)
     const sessionId = opts.resumeSessionId ?? randomUUID()
     const args = this.buildArgs(opts, sessionId)
+    if (!opts.resumeSessionId) this._sessionId = null
 
     const child = spawn(opts.bin, args, {
       cwd: opts.cwd,
@@ -82,31 +90,109 @@ export class ClaudeCodeBackend implements AgentBackend {
       env: { ...cleanEnv(), ...opts.extraEnv }
     })
     this.child = child
+    const reader = new NdjsonReader()
+    const mapper = new ClaudeEventMapper()
+    let spawned = false
+    let closeHandled = false
+    let errorEmitted = false
+    let settleStart: (() => void) | null = null
+    let failStart: ((error: Error) => void) | null = null
+    const started = new Promise<void>((resolve, reject) => {
+      settleStart = resolve
+      failStart = reject
+    })
+
+    const rejectStart = (error: Error): void => {
+      if (!failStart) return
+      const reject = failStart
+      settleStart = null
+      failStart = null
+      reject(error)
+    }
+
+    const emitProcessError = (message: string): void => {
+      if (errorEmitted) return
+      errorEmitted = true
+      this.emit({ type: 'error', message: `실행 실패: ${message}`, kind: 'not-found' })
+    }
+
+    const consume = (lines: string[]): void => {
+      // stop timeout 뒤 다음 프로세스가 떴면, 이전 stdout을 새 mapper에 섞으면 안 된다.
+      if (this.child !== child || this.terminating.has(child)) return
+      for (const raw of parseLines(lines, (line) => {
+        process.stderr.write(`[claude] JSON 아님: ${line}\n`)
+      })) {
+        for (const event of mapper.map(raw)) this.emit(event)
+      }
+    }
 
     child.stdout.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => this.consume(this.reader.push(chunk)))
+    child.stdout.on('data', (chunk: string) => consume(reader.push(chunk)))
 
     child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (c: string) => process.stderr.write(`[claude] ${c}`))
+    child.stderr.on('data', (chunk: string) => {
+      if (this.child === child && !this.terminating.has(child)) {
+        process.stderr.write(`[claude] ${chunk}`)
+      }
+    })
+
+    child.once('spawn', () => {
+      // start 대기 중 stop/재시작이 들어왔다면 이 프로세스는 더 이상 현재 백엔드가 아니다.
+      if (this.child !== child || this.terminating.has(child)) {
+        rejectStart(new Error('백엔드 시작이 중단되었다'))
+        return
+      }
+      spawned = true
+      this.readyChild = child
+      this.opts = opts
+      if (!opts.resumeSessionId) this._sessionId = sessionId
+      const resolve = settleStart
+      settleStart = null
+      failStart = null
+      resolve?.()
+    })
 
     child.on('error', (err) => {
-      this.emit({ type: 'error', message: `실행 실패: ${err.message}`, kind: 'not-found' })
+      // 중단됐거나 교체된 자식의 늦은 error는 새 세션의 busy 상태를 풀면 안 된다.
+      if (this.child !== child || this.terminating.has(child)) {
+        if (!spawned) rejectStart(new Error('백엔드 시작이 중단되었다'))
+        return
+      }
+      emitProcessError(err.message)
+      if (!spawned) rejectStart(new Error(`실행 실패: ${err.message}`))
     })
 
     child.on('close', (code) => {
-      this.consume(this.reader.flush())
+      if (closeHandled) return
+      closeHandled = true
+      const isCurrent = this.child === child
+
+      // Node는 spawn 실패 때 error 뒤 close를 내보낸다. 가짜 child나 비정상 환경에서
+      // close만 오더라도 start Promise가 영원히 남지 않게 한다.
+      if (!spawned) {
+        if (isCurrent) {
+          const message = `프로세스가 시작 전에 종료됨 (code=${code ?? 'null'})`
+          emitProcessError(message)
+          rejectStart(new Error(`실행 실패: ${message}`))
+        } else {
+          rejectStart(new Error('백엔드 시작이 중단되었다'))
+        }
+      }
+
+      // stop 타임아웃 뒤 뜨는 이전 close가 현재 child를 null로 만들지 못하게 한다.
+      if (!isCurrent) {
+        if (this.child === null) this.emit({ type: 'exit', code })
+        return
+      }
+
+      if (!this.terminating.has(child)) consume(reader.flush())
       this.child = null
+      if (this.readyChild === child) this.readyChild = null
       this._busy = false
       this.emit({ type: 'exit', code })
     })
 
-    if (!opts.resumeSessionId) this._sessionId = sessionId
-  }
-
-  private consume(lines: string[]): void {
-    for (const raw of parseLines(lines, (l) => process.stderr.write(`[claude] JSON 아님: ${l}\n`))) {
-      for (const ev of this.mapper.map(raw)) this.emit(ev)
-    }
+    await started
   }
 
   private buildArgs(opts: SessionOpts, sessionId: string): string[] {
@@ -145,8 +231,8 @@ export class ClaudeCodeBackend implements AgentBackend {
   }
 
   async send(text: string): Promise<void> {
-    const child = this.child
-    if (!child) throw new Error('백엔드가 시작되지 않았다')
+    const child = this.readyChild
+    if (!child || this.child !== child) throw new Error('백엔드가 시작되지 않았다')
     this._busy = true
     const msg = {
       type: 'user',
@@ -163,35 +249,50 @@ export class ClaudeCodeBackend implements AgentBackend {
    * 대신 확실한 경로로 간다 — 프로세스를 죽이고 같은 세션 id 로 다시 붙인다.
    * 진행 중이던 턴은 버려지지만 대화 맥락은 살아남는다.
    */
-  async interrupt(): Promise<void> {
+  interrupt(): Promise<void> {
+    if (this.interruptPromise) return this.interruptPromise
+    const operation = this.performInterrupt().finally(() => {
+      if (this.interruptPromise === operation) this.interruptPromise = null
+    })
+    this.interruptPromise = operation
+    return operation
+  }
+
+  private async performInterrupt(): Promise<void> {
     const opts = this.opts
     const sessionId = this._sessionId
     if (!this.child || !opts || !sessionId) return
-    await this.stop()
+    const generation = this.stopGeneration
+    await this.stopChild()
+    // full app stop이 old child 종료를 기다리는 사이 들어왔으면 resume child를 띄우지 않는다.
+    if (this.stopGeneration !== generation) return
     await this.start({ ...opts, resumeSessionId: sessionId })
   }
 
   async stop(): Promise<void> {
+    this.stopGeneration += 1
+    await this.stopChild()
+  }
+
+  private stopChild(): Promise<void> {
+    if (this.stoppingChild) return this.stoppingChild
     const child = this.child
-    if (!child) return
-    this.child = null
-    this._busy = false
-    // stdin 을 닫으면 CLI 가 정상 종료 절차를 밟는다. 응답이 없으면 강제로 끊는다.
-    try {
-      child.stdin.end()
-    } catch {
-      /* 이미 닫혔으면 무시 */
-    }
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        child.kill()
-        resolve()
-      }, 3000)
-      child.once('close', () => {
-        clearTimeout(timer)
-        resolve()
-      })
+    if (!child) return Promise.resolve()
+
+    const operation = this.performStopChild(child).finally(() => {
+      if (this.stoppingChild === operation) this.stoppingChild = null
     })
+    this.stoppingChild = operation
+    return operation
+  }
+
+  private async performStopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+    this.terminating.add(child)
+    if (this.readyChild === child) this.readyChild = null
+    this._busy = false
+    // stdin만 닫아 부모 CLI가 먼저 사라지면 MCP·도구 자식이 고아가 될 수 있다.
+    // 프로세스 트리 종료와 실제 close를 모두 확인한 뒤 다음 턴이나 앱 종료를 허용한다.
+    await this.terminateChild(child, 'Claude Code')
   }
 }
 

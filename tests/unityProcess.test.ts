@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { UnityProcessManager, type SpawnLike } from '../src/main/avatar/unityProcess'
+import {
+  UNITY_STABLE_RUN_MS,
+  UNITY_TERMINATION_TIMEOUT_MS,
+  UnityProcessManager,
+  type SpawnLike
+} from '../src/main/avatar/unityProcess'
 
 /**
  * 실제 Unity 바이너리 없이 수명만 검증한다.
@@ -134,10 +139,11 @@ describe('재시작', () => {
 
     spawned[0]!.die(3)
     expect(onGaveUp).toHaveBeenCalledWith(expect.stringContaining('code=3'))
-    expect(log).toHaveBeenCalledWith('error', expect.stringContaining('반복해서 죽는다'))
+    expect(log).toHaveBeenCalledWith('error', expect.stringContaining('반복해서 죽거나'))
   })
 
-  it('연결에 성공하면 재시작 예산을 되돌려준다', () => {
+  it('연결 뒤 안정 가동 시간을 채우면 재시작 예산을 되돌려준다', () => {
+    vi.useFakeTimers()
     // 며칠 켜둔 앱에서 어쩌다 난 크래시가 누적돼 멀쩡한 세션에서 상한이 터지면 안 된다.
     const manager = make({ maxRestarts: 1 })
     manager.start()
@@ -146,11 +152,57 @@ describe('재시작', () => {
     expect(manager.restartCount).toBe(1)
 
     manager.notifyConnected()
+    expect(manager.restartCount).toBe(1)
+    vi.advanceTimersByTime(UNITY_STABLE_RUN_MS)
     expect(manager.restartCount).toBe(0)
 
     spawned[1]!.die()
     expect(manager.restartCount).toBe(1)
     expect(spawnFn).toHaveBeenCalledTimes(3)
+  })
+
+  it('연결 직후 반복 크래시는 재시작 상한을 우회하지 못한다', () => {
+    vi.useFakeTimers()
+    const onGaveUp = vi.fn()
+    const manager = make({ maxRestarts: 1, onGaveUp })
+    manager.start()
+
+    manager.notifyConnected()
+    spawned[0]!.die()
+    expect(spawnFn).toHaveBeenCalledTimes(2)
+
+    manager.notifyConnected()
+    spawned[1]!.die()
+    expect(spawnFn).toHaveBeenCalledTimes(2)
+    expect(onGaveUp).toHaveBeenCalledTimes(1)
+  })
+
+  it('같은 child의 error 뒤 exit를 두 번 종료로 세지 않는다', () => {
+    const manager = make({ maxRestarts: 2 })
+    manager.start()
+
+    spawned[0]!.emit('error', new Error('kill failed'))
+    spawned[0]!.die()
+
+    expect(spawnFn).toHaveBeenCalledTimes(2)
+    expect(manager.restartCount).toBe(1)
+  })
+
+  it('핸드셰이크 timeout 종료 신호를 무시한 프로세스는 조용히 남기지 않는다', () => {
+    vi.useFakeTimers()
+    const onGaveUp = vi.fn()
+    const manager = make({
+      launchTimeoutMs: 10,
+      terminateFn: vi.fn(),
+      onGaveUp
+    })
+    manager.start()
+
+    vi.advanceTimersByTime(10 + UNITY_TERMINATION_TIMEOUT_MS)
+
+    expect(spawnFn).toHaveBeenCalledTimes(1)
+    expect(onGaveUp).toHaveBeenCalledWith(expect.stringContaining('프로세스가 남아 있다'))
+    expect(manager.running).toBe(true)
   })
 
   it('핸드셰이크가 없으면 시간 초과로 죽이고 다시 띄운다', () => {
@@ -206,5 +258,56 @@ describe('종료', () => {
   it('띄운 적 없으면 stop 은 아무것도 하지 않는다', async () => {
     await expect(make({ playerPath: '' }).stop()).resolves.toBeUndefined()
     expect(terminateFn).not.toHaveBeenCalled()
+  })
+
+  it('종료 명령 뒤에도 exit가 없으면 고아가 없다고 가장하지 않는다', async () => {
+    vi.useFakeTimers()
+    const neverExits = vi.fn()
+    const manager = make({ terminateFn: neverExits })
+    manager.start()
+
+    const stopping = manager.stop()
+    const rejected = expect(stopping).rejects.toThrow('종료 신호 뒤에도 남아 있다')
+    await vi.advanceTimersByTimeAsync(UNITY_TERMINATION_TIMEOUT_MS)
+    await rejected
+    expect(neverExits).toHaveBeenCalledTimes(1)
+    expect(manager.running).toBe(true)
+  })
+
+  it('종료 확인 실패 뒤 같은 child 핸들로 다시 종료를 시도할 수 있다', async () => {
+    vi.useFakeTimers()
+    const retryingTerminate = vi.fn((child: ChildProcess) => {
+      if (retryingTerminate.mock.calls.length < 2) return
+      const fake = child as unknown as FakeChild
+      fake.exitCode = 0
+      fake.emit('exit', 0, null)
+    })
+    const manager = make({ terminateFn: retryingTerminate })
+    manager.start()
+
+    const firstStop = manager.stop()
+    const rejected = expect(firstStop).rejects.toThrow('종료 신호 뒤에도 남아 있다')
+    await vi.advanceTimersByTimeAsync(UNITY_TERMINATION_TIMEOUT_MS)
+    await rejected
+
+    expect(manager.running).toBe(true)
+    await expect(manager.stop()).resolves.toBeUndefined()
+    expect(retryingTerminate).toHaveBeenCalledTimes(2)
+    expect(retryingTerminate.mock.calls[0]![0]).toBe(retryingTerminate.mock.calls[1]![0])
+    expect(manager.running).toBe(false)
+  })
+
+  it('동시에 들어온 stop은 하나의 종료 시도만 공유한다', async () => {
+    const delayedTerminate = vi.fn()
+    const manager = make({ terminateFn: delayedTerminate })
+    manager.start()
+
+    const firstStop = manager.stop()
+    const secondStop = manager.stop()
+    expect(delayedTerminate).toHaveBeenCalledTimes(1)
+
+    spawned[0]!.die(0)
+    await expect(Promise.all([firstStop, secondStop])).resolves.toEqual([undefined, undefined])
+    expect(manager.running).toBe(false)
   })
 })

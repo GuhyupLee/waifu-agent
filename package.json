@@ -2,6 +2,7 @@
   "name": "waifu-agent",
   "version": "0.1.0",
   "description": "Desktop VRM agent driven by Claude Code / Codex CLI (no API keys)",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "./out/main/index.js",
   "type": "module",
   "private": true,
@@ -12,6 +13,11 @@
     "start": "electron-vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:panel-visual": "electron scripts/panel-visual-smoke.cjs",
+    "test:companion-visual": "electron scripts/companion-visual-smoke.cjs",
+    "tray:icon": "node scripts/make-tray-icon.mjs",
+    "unity:check": "node scripts/check-unity-scripts.mjs",
+    "unity:test": "node scripts/check-unity-scripts.mjs --run",
     "motions:generate": "node scripts/generate-vrma-library.mjs",
     "motions:verify": "node scripts/verify-vrma-library.mjs"
   },
@@ -27,6 +33,16 @@
       "out/**/*",
       "resources/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICE",
+        "to": "NOTICE"
+      }
     ]
   },
   "dependencies": {

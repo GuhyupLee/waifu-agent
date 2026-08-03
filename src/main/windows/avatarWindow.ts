@@ -146,7 +146,7 @@ export function createAvatarWindow(opts: AvatarWindowOptions = DEFAULT_AVATAR_WI
   // 클릭이 닿으려면 그 전에 ignore 를 꺼야 한다.
   win.setIgnoreMouseEvents(true, { forward: true })
 
-  void loadRendererPage(win, 'avatar')
+  loadRendererPage(win, 'avatar')
   return win
 }
 

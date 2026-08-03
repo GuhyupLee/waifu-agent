@@ -179,5 +179,36 @@ namespace WaifuAvatar.Tests
             var b = OverlayMath.Compute(new OverlayInput { Elapsed = 2.1f, Weight = 1f }).Spine.x;
             Assert.Greater(Mathf.Abs(a - b), 1e-4f);
         }
+
+        /// <summary>
+        /// '상체' 슬라이더가 실제로 무언가를 움직여야 한다. 예전에는 PresenceDirector
+        /// 가 값을 계산해 두고도 오버레이에 넘기지 않아 슬라이더가 장식이었다.
+        /// </summary>
+        [Test]
+        public void 상체가_커서를_따라_돈다()
+        {
+            var still = OverlayMath.Compute(new OverlayInput
+            {
+                Elapsed = 1f, Weight = 1f, BodyYaw = 0f, MotionPlaying = true
+            });
+            var turned = OverlayMath.Compute(new OverlayInput
+            {
+                Elapsed = 1f, Weight = 1f, BodyYaw = 1f, MotionPlaying = true
+            });
+
+            Assert.Greater(Mathf.Abs(turned.Spine.y - still.Spine.y), 1e-4f);
+            Assert.Greater(Mathf.Abs(turned.Chest.y - still.Chest.y), 1e-4f);
+        }
+
+        [Test]
+        public void 상체는_고개보다_덜_돈다()
+        {
+            // 몸통이 고개만큼 돌면 커서를 따라 도는 로봇이 된다.
+            var r = OverlayMath.Compute(new OverlayInput
+            {
+                Elapsed = 1f, Weight = 1f, Yaw = 1f, BodyYaw = 1f, MotionPlaying = true
+            });
+            Assert.Less(Mathf.Abs(r.Chest.y), Mathf.Abs(r.Head.y));
+        }
     }
 }

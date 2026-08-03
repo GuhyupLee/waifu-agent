@@ -9,14 +9,25 @@
       :root {
         color-scheme: dark;
       }
+      /*
+        React 가 붙기 전 한 프레임을 위한 값이다. panel/theme.ts 의
+        color.base / color.text 와 **같은 값이어야 한다** — 다르면 창이 뜰 때
+        배경색이 한 번 바뀌는 게 보인다. 여기서는 TS 를 import 할 수 없어
+        손으로 맞춘다.
+      */
       html,
       body,
       #root {
         margin: 0;
         height: 100%;
-        background: #14131a;
-        color: #e8e6f0;
+        background: #131120;
+        color: #e9e7f2;
         font-family: 'Pretendard', 'Segoe UI', system-ui, sans-serif;
+      }
+      body {
+        overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
       }
     </style>
   </head>

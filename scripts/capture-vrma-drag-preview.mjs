@@ -94,7 +94,9 @@ async function main() {
     let target
     while (Date.now() - started < 20_000) {
       const targets = await waitForJson('/json/list')
-      target = targets.find((candidate) => /avatar\.html/i.test(candidate.url) || candidate.title === '유로실라 유니아')
+      // URL 로만 찾는다. 예전에는 창 제목으로도 찾았는데, 제목은 설정의 퍼소나
+      // 이름이라 사용자가 이름을 바꾸는 순간 맞지 않는다. avatar.html 은 안 바뀐다.
+      target = targets.find((candidate) => /avatar\.html/i.test(candidate.url))
       if (target) break
       await delay(200)
     }

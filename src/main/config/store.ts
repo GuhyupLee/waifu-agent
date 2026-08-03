@@ -53,7 +53,12 @@ function merge(base: WaifuConfig, patch: Partial<WaifuConfig>): WaifuConfig {
         idle: { ...base.avatar.presence.idle, ...patch.avatar?.presence?.idle },
         tracking: { ...base.avatar.presence.tracking, ...patch.avatar?.presence?.tracking },
         sleep: { ...base.avatar.presence.sleep, ...patch.avatar?.presence?.sleep },
-        bubble: { ...base.avatar.presence.bubble, ...patch.avatar?.presence?.bubble }
+        bubble: { ...base.avatar.presence.bubble, ...patch.avatar?.presence?.bubble },
+        windowSit: { ...base.avatar.presence.windowSit, ...patch.avatar?.presence?.windowSit },
+        dragSway: { ...base.avatar.presence.dragSway, ...patch.avatar?.presence?.dragSway },
+        roam: { ...base.avatar.presence.roam, ...patch.avatar?.presence?.roam },
+        ambientLight: { ...base.avatar.presence.ambientLight, ...patch.avatar?.presence?.ambientLight },
+        autoScale: { ...base.avatar.presence.autoScale, ...patch.avatar?.presence?.autoScale }
       }
     },
     system: { ...base.system, ...patch.system },

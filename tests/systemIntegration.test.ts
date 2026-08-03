@@ -63,17 +63,25 @@ describe('숨김 시작', () => {
 })
 
 describe('창을 닫을 때', () => {
-  it('트레이가 켜져 있고 closeToTray 면 남는다', () => {
-    expect(shouldQuitOnClose(config({ trayIcon: true, closeToTray: true }))).toBe(false)
+  it('트레이가 실제로 있고 closeToTray 면 남는다', () => {
+    expect(shouldQuitOnClose(config({ trayIcon: true, closeToTray: true }), true)).toBe(false)
   })
 
   it('closeToTray 가 꺼져 있으면 종료한다', () => {
-    expect(shouldQuitOnClose(config({ trayIcon: true, closeToTray: false }))).toBe(true)
+    expect(shouldQuitOnClose(config({ trayIcon: true, closeToTray: false }), true)).toBe(true)
   })
 
-  it('트레이 아이콘이 없으면 closeToTray 여도 종료한다', () => {
-    // 트레이가 없는데 트레이로 보내면 되살릴 방법이 없다.
-    expect(shouldQuitOnClose(config({ trayIcon: false, closeToTray: true }))).toBe(true)
+  it('트레이 설정이 꺼져 있으면 closeToTray 여도 종료한다', () => {
+    expect(shouldQuitOnClose(config({ trayIcon: false, closeToTray: true }), false)).toBe(true)
+  })
+
+  /**
+   * 실제로 이 상태에 빠졌다. 설정에는 트레이가 켜져 있는데 `resources/tray.png` 가
+   * 없어 트레이가 만들어지지 않았고, 창을 닫자 되살릴 입구가 없는 채로 프로세스만
+   * 남았다. 설정이 아니라 트레이의 실재를 봐야 하는 이유다.
+   */
+  it('설정은 켜져 있어도 트레이가 안 만들어졌으면 종료한다', () => {
+    expect(shouldQuitOnClose(config({ trayIcon: true, closeToTray: true }), false)).toBe(true)
   })
 })
 
@@ -89,6 +97,24 @@ describe('트레이 메뉴', () => {
   it('종료 항목이 반드시 있다', () => {
     // 창이 트레이로 숨는 앱에서 종료 경로가 없으면 작업 관리자로 죽여야 한다.
     expect(trayMenu(config(), true).some((item) => item.id === 'quit')).toBe(true)
+  })
+
+  it('수면 항목이 실제 상태를 따라간다', () => {
+    // 재우기만 되고 깨우지 못하던 회귀를 막는다. checked 가 늘 false 라
+    // 사용자가 아바타를 깨울 방법이 없었다.
+    const awake = trayMenu(config(), true, false).find((item) => item.id === 'toggle-sleep')
+    expect(awake?.label).toBe('재우기')
+    expect(awake?.checked).toBe(false)
+
+    const asleep = trayMenu(config(), true, true).find((item) => item.id === 'toggle-sleep')
+    expect(asleep?.label).toBe('깨우기')
+    expect(asleep?.checked).toBe(true)
+  })
+
+  it('연결 상태를 수면 상태로 착각하지 않는다', () => {
+    // '아바타 보이기' 항목이 unityConnected 를 checked 로 쓰다가, 누르면
+    // 오히려 재우는 동작을 했다. 그 항목 자체를 없앴다.
+    expect(trayMenu(config(), true).some((item) => item.id === 'toggle-avatar')).toBe(false)
   })
 
   it('자동 실행 체크 상태가 설정을 따른다', () => {

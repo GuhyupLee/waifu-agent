@@ -16,7 +16,7 @@ import { writeSessionSettings } from './backends/claudeCode'
 import { backendSettings, createBackend, otherBackend } from './backends'
 import type { AgentBackend } from './backends/types'
 import { ControlServer } from './control/server'
-import { mcpLaunchSpec, permissionHookCommand } from './childEntries'
+import { mcpLaunchSpec, permissionHookCommand, RUN_AS_NODE_ENV } from './childEntries'
 import { buildSystemPrompt } from './persona/prompt'
 import { MemoryStore } from './persona/memory'
 import { TaskStore } from './tasks/store'
@@ -62,10 +62,22 @@ export class Waifu {
   private readonly control: ControlServer
   /** 현재 작업 루트. 페일오버로 백엔드를 갈아탈 때 다시 필요하다. */
   private cwd = ''
+  /** control 서버와 백엔드가 모두 떠서 사용자 발화를 받을 수 있는가. */
+  private started = false
+  /** 종료가 시작된 인스턴스가 failover나 늦은 이벤트로 다시 살아나는 것을 막는다. */
+  private stopped = false
+  private stopPromise: Promise<void> | null = null
+  /** interrupt/failover 중 Claude의 의도된 exit를 런타임 장애로 오인하지 않는다. */
+  private backendTransition = false
+  /** 종료가 interrupt/failover 중간을 추월해 새 CLI가 뒤늦게 살아나는 것을 막는다. */
+  private backendTransitionTask: Promise<void> | null = null
   /** 한도 때문에 이미 갈아탔는지. 무한 왕복을 막는다. */
   private failedOver = false
   /** 대기 중인 권한 승인. 훅이 응답을 기다리며 붙잡혀 있다. */
-  private readonly pending = new Map<string, (d: PermissionDecision) => void>()
+  private readonly pending = new Map<
+    string,
+    { request: PermissionRequest; resolve: (d: PermissionDecision) => void }
+  >()
   /** 렌더러가 실제로 로드에 성공한 모션 이름. 에이전트에게 이 목록으로만 답한다. */
   private motions: string[] = []
   private readonly memory = new MemoryStore()
@@ -92,7 +104,13 @@ export class Waifu {
   constructor(
     private readonly config: WaifuConfig,
     private readonly avatar: () => BrowserWindow | null,
-    private readonly panel: () => BrowserWindow | null
+    private readonly panel: () => BrowserWindow | null,
+    /** 활성 렌더러가 Electron인지 Unity인지 main만 알고 있으므로 전송을 위임한다. */
+    private readonly dispatchAvatar?: (command: AvatarCommand) => void,
+    /** 승인 요청 중 패널이 닫혀 있으면 새 패널을 만들어 앞으로 꺼낸다. */
+    private readonly revealPanel?: () => BrowserWindow | null,
+    /** 지연 생성되는 UI들에 이벤트를 기록·동시 전송하는 main 소유 경로. */
+    private readonly dispatchPanel?: (event: PanelEvent) => void
   ) {
     this.control = new ControlServer((tool, args) => this.onTool(tool, args))
     this.active = config.backend.active
@@ -107,13 +125,26 @@ export class Waifu {
   }
 
   async start(cwd: string): Promise<void> {
-    await this.control.start()
-    this.cwd = cwd
-    await this.startBackend()
-    // 30초면 분 단위 알림에 충분하고, 켜둬도 부담이 없다.
-    this.reminderTimer = setInterval(() => this.fireDueReminders(), 30_000)
-    this.fireDueReminders()
-    this.scheduleIdleAction()
+    if (this.stopped) throw new Error('이미 종료한 Agent Core는 다시 시작할 수 없다')
+    try {
+      await this.control.start()
+      if (this.stopped) throw new Error('Agent Core 시작 중 종료됐다')
+      this.cwd = cwd
+      await this.startBackend()
+      if (this.stopped) {
+        await this.backend.stop()
+        throw new Error('Agent Core 시작 중 종료됐다')
+      }
+      this.started = true
+      // 30초면 분 단위 알림에 충분하고, 켜둬도 부담이 없다.
+      this.reminderTimer = setInterval(() => this.fireDueReminders(), 30_000)
+      this.fireDueReminders()
+      this.scheduleIdleAction()
+    } catch (err) {
+      this.started = false
+      await Promise.allSettled([this.backend.stop(), this.control.stop()])
+      throw err
+    }
   }
 
   /** 마지막으로 사용자와 주고받은 시각. 자율 행동이 끼어들지 판단하는 기준이다. */
@@ -196,7 +227,7 @@ export class Waifu {
 
   private async startBackend(resumeSessionId?: string): Promise<void> {
     const mcp = mcpLaunchSpec()
-    const mcpEnv = { ELECTRON_RUN_AS_NODE: '1', ...this.control.childEnv() }
+    const mcpEnv = { ...RUN_AS_NODE_ENV, ...this.control.childEnv() }
     const mcpConfig = {
       mcpServers: { waifu: { command: mcp.command, args: [...mcp.args], env: mcpEnv } }
     }
@@ -219,7 +250,7 @@ export class Waifu {
       // Electron 앱으로 뜬다. 증상은 "권한 창이 안 뜨고 전부 통과됨" 이라
       // 안전망이 사라진 걸 알아채기 어렵다. 실제로 이 상태로 한 번 만들었었다.
       // claude 자신은 Electron 앱이 아니라 이 변수의 영향을 받지 않는다.
-      extraEnv: { ELECTRON_RUN_AS_NODE: '1', ...this.control.childEnv() }
+      extraEnv: { ...RUN_AS_NODE_ENV, ...this.control.childEnv() }
     })
   }
 
@@ -230,14 +261,22 @@ export class Waifu {
    * 서로 다른 저장소에 있어서 교차 재개가 불가능하다. 사용자에게 맥락이 끊겼음을 알린다.
    */
   private async switchBackend(to: BackendKind, why: string): Promise<void> {
-    if (to === this.active) return
+    if (to === this.active || this.stopped) return
+    this.started = false
     this.unsubscribe()
     await this.backend.stop()
+    if (this.stopped) return
 
     this.active = to
     this.backend = createBackend(to)
     this.unsubscribe = this.backend.onEvent((e) => this.onBackendEvent(e))
+    if (this.stopped) return
     await this.startBackend()
+    if (this.stopped) {
+      await this.backend.stop()
+      return
+    }
+    this.started = true
 
     this.toPanel({
       type: 'notice',
@@ -247,15 +286,28 @@ export class Waifu {
     process.stdout.write(`[waifu] 백엔드 전환 -> ${to} (${why})\n`)
   }
 
+  /** interrupt와 failover를 겹치지 않고, full stop이 기다릴 수 있는 한 작업으로 묶는다. */
+  private runBackendTransition(action: () => Promise<void>): Promise<void> {
+    if (this.backendTransitionTask) return this.backendTransitionTask
+    this.backendTransition = true
+    const task = action().finally(() => {
+      if (this.backendTransitionTask !== task) return
+      this.backendTransitionTask = null
+      this.backendTransition = false
+    })
+    this.backendTransitionTask = task
+    return task
+  }
+
   /**
    * 이번 턴이 원격 요청인지. 권한 판정에 쓴다.
    *
    * 훅은 `session_id` 밖에 모르지만, 실제로는 한 번에 한 턴만 돈다.
    * 현재 Task 의 origin 을 보면 충분하다.
    */
-  private effectivePermission(): PermissionMode {
+  private effectivePermission(origin: TaskOrigin = this.current?.origin ?? 'desktop'): PermissionMode {
     const base = this.config.permission.mode
-    if (this.current?.origin !== 'discord') return base
+    if (origin !== 'discord') return base
     return clampRemotePermission(base, this.config.discord.maxPermission)
   }
 
@@ -266,13 +318,30 @@ export class Waifu {
   private replyTo: ((text: string) => void) | null = null
 
   send(text: string, origin: TaskOrigin = 'desktop', replyTo?: (text: string) => void): void {
+    if (!this.started) {
+      const message = '작업 폴더를 고른 뒤 에이전트를 시작해야 부탁을 보낼 수 있다.'
+      this.toPanel({ type: 'notice', level: 'warn', message })
+      replyTo?.(message)
+      return
+    }
+    if (this.backend.busy) {
+      const message = '지금 하던 작업이 끝나거나 중단된 뒤 다시 부탁해줘.'
+      this.toPanel({ type: 'notice', level: 'warn', message })
+      replyTo?.(message)
+      return
+    }
     this.replyTo = replyTo ?? null
     // 방금 말을 걸었으니 한동안 딴짓하지 않는다.
     this.lastInteractionAt = Date.now()
 
     // 이어갈 작업이 없으면 새로 만든다. 제목은 첫 발화에서 따고, 에이전트가
     // 더 정확한 이름을 알게 되면 task_update 로 고친다.
-    if (!this.current || this.current.state === 'done' || this.current.state === 'failed') {
+    if (
+      !this.current ||
+      this.current.state === 'done' ||
+      this.current.state === 'failed' ||
+      this.current.origin !== origin
+    ) {
       this.current = this.tasks.create({
         title: text.slice(0, 60),
         cwd: this.cwd,
@@ -281,10 +350,23 @@ export class Waifu {
       })
     }
     this.tasks.append(this.current.id, 'user', text)
-    this.current = this.tasks.update(this.current.id, { state: 'running', needsUser: '' })
+    const running = this.tasks.update(this.current.id, { state: 'running', needsUser: '' })
+    if (!running) {
+      const message = '작업 기록을 열지 못해 부탁을 보내지 않았다.'
+      this.toPanel({ type: 'notice', level: 'error', message })
+      replyTo?.(message)
+      return
+    }
+    this.current = running
 
-    void this.backend.send(text).catch((err: unknown) => {
-      this.toPanel({ type: 'notice', level: 'error', message: `전송 실패: ${String(err)}` })
+    const taskId = running.id
+    const turnReply = this.replyTo
+    void this.backend.send(text, { permissionMode: this.effectivePermission(origin) }).catch((err: unknown) => {
+      const message = `전송 실패: ${String(err)}`
+      this.toPanel({ type: 'notice', level: 'error', message })
+      turnReply?.(message)
+      const task = this.tasks.get(taskId)
+      if (task) this.current = this.tasks.update(taskId, { state: 'failed' })
     })
     this.toAvatar({ type: 'status', state: 'thinking' })
   }
@@ -337,7 +419,21 @@ export class Waifu {
   }
 
   interrupt(): void {
-    void this.backend.interrupt()
+    if (this.stopped || this.backendTransitionTask) return
+    this.started = false
+    this.denyPendingPermissions('작업을 중단해서 실행하지 않았다.')
+    const backend = this.backend
+    void this.runBackendTransition(async () => {
+      try {
+        await backend.interrupt()
+        if (!this.stopped && this.backend === backend) this.started = true
+      } catch (err) {
+        if (!this.stopped) {
+          this.toPanel({ type: 'notice', level: 'error', message: `중단 실패: ${String(err)}` })
+          this.toAvatar({ type: 'status', state: 'error' })
+        }
+      }
+    })
     this.toAvatar({ type: 'status', state: 'idle' })
   }
 
@@ -348,17 +444,51 @@ export class Waifu {
 
   /** 패널에서 온 권한 응답. 훅이 이 값을 기다리고 있다. */
   resolvePermission(id: string, decision: PermissionDecision): void {
-    const resolve = this.pending.get(id)
-    if (!resolve) return
+    const entry = this.pending.get(id)
+    if (!entry) return
     this.pending.delete(id)
-    resolve(decision)
+    entry.resolve(decision)
     this.toPanel({ type: 'permission-resolved', id })
   }
 
-  async stop(): Promise<void> {
+  /** 패널이 닫혔다 다시 떠도 훅을 기다리게 둔 승인 카드를 복원한다. */
+  pendingPermissions(): PermissionRequest[] {
+    return [...this.pending.values()].map(({ request }) => request)
+  }
+
+  private denyPendingPermissions(message: string): void {
+    for (const [id, { resolve }] of this.pending) {
+      resolve({ behavior: 'deny', message })
+      this.toPanel({ type: 'permission-resolved', id })
+    }
+    this.pending.clear()
+  }
+
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
+    this.stopped = true
+    this.started = false
+    const attempt = this.performStop()
+    let tracked: Promise<void>
+    tracked = attempt.finally(() => {
+      // backend/control이 실패한 경우 보존한 child/server 핸들로 다시 종료할 수 있게 한다.
+      if (this.stopPromise === tracked) this.stopPromise = null
+    })
+    this.stopPromise = tracked
+    return tracked
+  }
+
+  private async performStop(): Promise<void> {
     this.cancelRoaming()
-    await this.backend.stop()
-    await this.control.stop()
+    // 재시작할 때 늦게 도착한 이전 프로세스 이벤트가 닫힌 TaskStore를 건드리거나 새 UI에
+    // 섞이지 않게 먼저 구독을 끊는다.
+    this.unsubscribe()
+    this.denyPendingPermissions('앱이 종료되어 실행하지 않았다.')
+    // Claude interrupt는 old child 종료 뒤 같은 세션을 새 child로 재개한다. 그 중간에
+    // stop이 추월하면 child=null만 보고 끝난 다음 재개 child가 고아로 살아날 수 있다.
+    const transition = this.backendTransitionTask
+    if (transition) await transition.catch(() => undefined)
+    const shutdowns = await Promise.allSettled([this.backend.stop(), this.control.stop()])
     if (this.reminderTimer) clearInterval(this.reminderTimer)
     if (this.idleTimer) clearTimeout(this.idleTimer)
     this.memory.close()
@@ -366,6 +496,8 @@ export class Waifu {
     this.snapshots.close()
     this.reminders.close()
     this.routines.close()
+    const failure = shutdowns.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failure) throw failure.reason
   }
 
   // ─────────────────────── 설정 화면용 조회·삭제 ───────────────────────
@@ -402,14 +534,28 @@ export class Waifu {
     motions: number
     activeTasks: number
     memories: number
+    runtime: {
+      configuredBackend: BackendKind
+      cwd: string
+      permissionMode: PermissionMode
+      workspaces: string[]
+    } | null
   } {
     return {
       backend: this.active,
       sessionId: this.backend.sessionId,
-      busy: this.backend.busy,
+      busy: this.started && this.backend.busy,
       motions: this.motions.length,
       activeTasks: this.tasks.active().length,
-      memories: this.memory.count()
+      memories: this.memory.count(),
+      runtime: this.started
+        ? {
+            configuredBackend: this.config.backend.active,
+            cwd: this.cwd,
+            permissionMode: this.config.permission.mode,
+            workspaces: [...this.config.permission.workspaces]
+          }
+        : null
     }
   }
 
@@ -657,13 +803,25 @@ export class Waifu {
    */
   private confirmSensitive(question: string, toolName: string): Promise<boolean> {
     const id = randomUUID()
+    const request: PermissionRequest = { id, toolName, input: null, reason: question }
     return new Promise<boolean>((resolve) => {
-      this.pending.set(id, (d) => resolve(d.behavior === 'allow'))
-      this.toPanel({
-        type: 'permission-request',
-        request: { id, toolName, input: null, reason: question }
+      this.pending.set(id, {
+        request,
+        resolve: (decision) => resolve(decision.behavior === 'allow')
       })
-      this.panel()?.show()
+      this.toPanel({ type: 'permission-request', request })
+      try {
+        const panel = this.panel()
+        if (panel && !panel.isDestroyed()) {
+          panel.show()
+          panel.focus()
+        } else this.revealPanel?.()
+      } catch (err) {
+        this.resolvePermission(id, {
+          behavior: 'deny',
+          message: `승인 창을 열지 못해 실행하지 않았다: ${String(err)}`
+        })
+      }
     })
   }
 
@@ -688,7 +846,7 @@ export class Waifu {
     const win = this.avatar()
     if (!win || win.isDestroyed()) return Promise.resolve('아바타 창이 없다.')
 
-    const display = resolveTarget(win, { kind: to } as never)
+    const display = resolveTarget(win, { kind: to })
     if (!display) {
       if (previous) this.toAvatar({ type: 'roam', moving: false, direction: 0 })
       return Promise.resolve('갈 수 있는 모니터를 찾지 못했다.')
@@ -797,18 +955,29 @@ export class Waifu {
     }
 
     return new Promise<PermissionDecision>((resolve) => {
-      this.pending.set(request.id, resolve)
+      this.pending.set(request.id, { request, resolve })
       this.toAvatar({ type: 'status', state: 'thinking' })
       this.toPanel({ type: 'permission-request', request })
-      const panel = this.panel()
-      // 승인 카드가 뒤에 가려져 있으면 사용자는 앱이 멈춘 줄 안다.
-      panel?.show()
+      try {
+        const panel = this.panel()
+        // 승인 카드가 뒤에 가려져 있으면 사용자는 앱이 멈춘 줄 안다.
+        if (panel && !panel.isDestroyed()) {
+          panel.show()
+          panel.focus()
+        } else this.revealPanel?.()
+      } catch (err) {
+        this.resolvePermission(request.id, {
+          behavior: 'deny',
+          message: `승인 창을 열지 못해 실행하지 않았다: ${String(err)}`
+        })
+      }
     })
   }
 
   // ─────────────────────── 백엔드 → UI ───────────────────────
 
   private onBackendEvent(e: BackendEvent): void {
+    if (this.stopped) return
     this.toPanel({ type: 'backend', event: e })
 
     switch (e.type) {
@@ -903,6 +1072,19 @@ export class Waifu {
           this.maybeFailover('사용량 한도에 걸려')
         }
         break
+      case 'exit':
+        // Codex는 턴마다 프로세스가 정상 종료된다. Claude Code만 상주 프로세스라
+        // transition 바깥의 exit가 곧 런타임 유실이다.
+        if (this.active === 'claude-code' && !this.backendTransition) {
+          this.started = false
+          this.denyPendingPermissions('Claude Code 연결이 종료되어 실행하지 않았다.')
+          this.toPanel({
+            type: 'notice',
+            level: 'error',
+            message: 'Claude Code 연결이 종료됐다. 앱을 다시 시작해 연결해줘.'
+          })
+        }
+        break
       default:
         break
     }
@@ -915,19 +1097,27 @@ export class Waifu {
    * 프로세스만 계속 띄웠다 죽인다.
    */
   private maybeFailover(why: string): void {
-    if (!this.config.backend.failover || this.failedOver) return
+    if (this.stopped || !this.config.backend.failover || this.failedOver) return
     this.failedOver = true
-    void this.switchBackend(otherBackend(this.active), why).catch((err: unknown) => {
+    void this.runBackendTransition(() => this.switchBackend(otherBackend(this.active), why)).catch((err: unknown) => {
       this.toPanel({ type: 'notice', level: 'error', message: `백엔드 전환 실패: ${String(err)}` })
     })
   }
 
   private toAvatar(cmd: AvatarCommand): void {
+    if (this.dispatchAvatar) {
+      this.dispatchAvatar(cmd)
+      return
+    }
     const win = this.avatar()
     if (win && !win.isDestroyed()) win.webContents.send(IPC.avatarCommand, cmd)
   }
 
   private toPanel(evt: PanelEvent): void {
+    if (this.dispatchPanel) {
+      this.dispatchPanel(evt)
+      return
+    }
     const win = this.panel()
     if (win && !win.isDestroyed()) win.webContents.send(IPC.panelEvent, evt)
   }

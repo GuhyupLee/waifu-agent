@@ -122,6 +122,16 @@ namespace WaifuAvatar.Tests
         }
 
         [Test]
+        public void motions_이벤트는_에이전트가_고를_이름을_싣는다()
+        {
+            var json = Json.Event(new MotionsEvent { names = new[] { "idle-breathe", "wave" } });
+
+            Assert.That(json, Does.Contain("\"type\":\"motions\""));
+            Assert.That(json, Does.Contain("idle-breathe"));
+            Assert.That(json, Does.Contain("wave"));
+        }
+
+        [Test]
         public void hover_이벤트는_over_를_싣는다()
         {
             Assert.That(Json.Event(new HoverEvent { over = true }), Does.Contain("\"over\":true"));

@@ -1,0 +1,267 @@
+:root {
+  color: #fff9ff;
+  font-family:
+    Pretendard, 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.companion-shell {
+  width: 100%;
+  height: 100%;
+  padding: 10px 10px 14px;
+}
+
+.companion-card {
+  position: relative;
+  display: grid;
+  grid-template-rows: 30px 1fr 42px 18px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 12px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 192, 232, 0.32);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(255, 119, 204, 0.2), transparent 38%),
+    linear-gradient(145deg, rgba(35, 25, 48, 0.97), rgba(15, 13, 25, 0.97));
+  box-shadow:
+    0 16px 42px rgba(5, 2, 12, 0.45),
+    inset 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.companion-card::after {
+  position: absolute;
+  right: -8px;
+  top: 76px;
+  width: 20px;
+  height: 20px;
+  content: '';
+  transform: rotate(45deg);
+  border-top: 1px solid rgba(255, 192, 232, 0.28);
+  border-right: 1px solid rgba(255, 192, 232, 0.28);
+  background: #191421;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  -webkit-app-region: drag;
+}
+
+header strong {
+  max-width: 96px;
+  overflow: hidden;
+  color: #fff2fb;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.presence {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #88e8c1;
+  box-shadow: 0 0 10px rgba(117, 245, 191, 0.72);
+}
+
+.presence.busy {
+  background: #ff9ed7;
+  box-shadow: 0 0 11px rgba(255, 116, 202, 0.8);
+  animation: breathe 1.1s ease-in-out infinite alternate;
+}
+
+.phase {
+  min-width: 0;
+  overflow: hidden;
+  color: #bcaec7;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close {
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 50%;
+  color: #cdbfd3;
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 0;
+  padding: 2px 2px 6px;
+  overflow: hidden;
+}
+
+.conversation p {
+  max-width: 94%;
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.42;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation .user {
+  align-self: flex-end;
+  padding: 4px 8px;
+  border-radius: 11px 11px 3px 11px;
+  color: #ffe9f6;
+  background: rgba(193, 80, 154, 0.3);
+}
+
+.conversation .waifu {
+  color: #fff9ff;
+}
+
+.conversation .notice,
+.conversation .empty {
+  color: #bbaec5;
+}
+
+.conversation .error {
+  color: #ff9aaa;
+}
+
+.conversation .warn {
+  color: #ffd29a;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px 4px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.composer input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #fff;
+  background: transparent;
+}
+
+.composer input::placeholder {
+  color: #8f8199;
+}
+
+.composer button,
+.permission-actions button {
+  border: 0;
+  border-radius: 11px;
+  padding: 7px 11px;
+  color: #211522;
+  background: linear-gradient(135deg, #ffb4df, #d79dff);
+  cursor: pointer;
+}
+
+.composer button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.composer .interrupt {
+  color: #ffdce5;
+  background: rgba(255, 91, 132, 0.19);
+}
+
+footer {
+  align-self: end;
+  padding-top: 4px;
+  color: #766d7d;
+  font-size: 9px;
+  text-align: center;
+}
+
+.permission-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+  padding: 4px 2px 7px;
+}
+
+.permission-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+
+.permission-copy b {
+  color: #ffd8ed;
+  font-size: 12px;
+}
+
+.permission-copy span {
+  overflow: hidden;
+  color: #c8bacd;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.permission-actions .deny {
+  color: #e9dce9;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@keyframes breathe {
+  from {
+    transform: scale(0.78);
+    opacity: 0.65;
+  }
+  to {
+    transform: scale(1.14);
+    opacity: 1;
+  }
+}

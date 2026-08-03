@@ -24,6 +24,31 @@ export function AvatarTab({ config, patch }: TabProps): React.JSX.Element {
         </div>
       </Section>
 
+      <Section title="무엇으로 그릴까">
+        <div style={S.row}>
+          {(
+            [
+              ['renderer', '내장'],
+              ['unity', 'Unity 셸']
+            ] as const
+          ).map(([kind, label]) => (
+            <label key={kind} style={S.choice}>
+              <input
+                type="radio"
+                checked={config.avatar.renderer === kind}
+                onChange={() => patch({ avatar: { ...config.avatar, renderer: kind } })}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+        <div style={S.hint}>
+          Unity 셸은 창에 걸터앉기·혼자 돌아다니기 같은 데스크탑 기능을 쓸 수 있다. 대신
+          플레이어를 먼저 빌드하고 <b>백엔드와 실행</b> 탭에서 그 경로를 지정해야 한다.
+          바꾼 뒤에는 앱을 다시 시작해야 한다.
+        </div>
+      </Section>
+
       <Section title="창">
         <Check
           label="항상 위에 두기"

@@ -111,6 +111,35 @@ namespace WaifuAvatar.Avatar
             return (0.94f + u * 0.12f, u);
         }
 
+        /// <summary>루프 클립의 재생 시간을 프레임 delta만큼 전진시키고 길이 안으로 감싼다.</summary>
+        public static float LoopTime(float current, float delta, float timeScale, float duration)
+        {
+            if (duration <= 0f || float.IsNaN(duration) || float.IsInfinity(duration)) return 0f;
+            var next = current + Mathf.Max(0f, delta) * Mathf.Max(0f, timeScale);
+            next %= duration;
+            if (next < 0f) next += duration;
+            return next;
+        }
+
+        /// <summary>원샷 클립은 끝에서 감지 않고 멈추며, 끝에 닿았는지도 함께 돌려준다.</summary>
+        public static float OneShotTime(
+            float current,
+            float delta,
+            float timeScale,
+            float duration,
+            out bool finished)
+        {
+            if (duration <= 0f || float.IsNaN(duration) || float.IsInfinity(duration))
+            {
+                finished = true;
+                return 0f;
+            }
+
+            var next = current + Mathf.Max(0f, delta) * Mathf.Max(0f, timeScale);
+            finished = next >= duration;
+            return Mathf.Clamp(next, 0f, duration);
+        }
+
         /// <summary>
         /// 다음 사건까지의 간격을 지수분포로 뽑는다.
         ///

@@ -52,17 +52,24 @@ export interface TrayMenuItem {
  * 메뉴 항목을 만드는 것과 Electron 에 붙이는 것을 나눈다 — 구성이 설정에 따라
  * 갈리는데, 그걸 Tray 객체와 엮으면 테스트할 수 없다.
  */
-export function trayMenu(config: WaifuConfig, unityConnected: boolean): TrayMenuItem[] {
+export function trayMenu(config: WaifuConfig, unityConnected: boolean, asleep = false): TrayMenuItem[] {
   return [
     { id: 'status', label: unityConnected ? '아바타: 연결됨' : '아바타: 꺼짐', type: 'normal' },
     { type: 'separator', label: '' },
-    { id: 'show-panel', label: '채팅 열기', type: 'normal' },
-    { id: 'toggle-avatar', label: '아바타 보이기', type: 'checkbox', checked: unityConnected },
+    { id: 'show-panel', label: '관리·기록 열기', type: 'normal' },
+    /**
+     * 재우기/깨우기 하나로 합쳤다.
+     *
+     * 예전에는 '아바타 보이기' 와 '재우기' 두 항목이 있었는데 둘 다 고장나 있었다 —
+     * 앞엣것은 연결 여부를 수면 상태로 착각해 눌면 오히려 재웠고, 뒤엣것은
+     * checked 가 늘 false 라 재우기만 되고 깨우지 못했다. 상태는 셸이 올려주는
+     * 것을 그대로 쓴다.
+     */
     {
       id: 'toggle-sleep',
-      label: '재우기',
+      label: asleep ? '깨우기' : '재우기',
       type: 'checkbox',
-      checked: false
+      checked: asleep
     },
     { type: 'separator', label: '' },
     {
@@ -79,10 +86,18 @@ export function trayMenu(config: WaifuConfig, unityConnected: boolean): TrayMenu
 /**
  * 창을 닫을 때 앱을 끝낼지 트레이로 보낼지.
  *
- * 트레이 아이콘이 **없는데** 트레이로 보내면 앱을 되살릴 방법이 없다 — 작업
- * 관리자로 죽이는 것 말고는. 그래서 두 설정을 같이 본다.
+ * 트레이가 **없는데** 트레이로 보내면 앱을 되살릴 방법이 없다 — 작업 관리자로
+ * 죽이는 것 말고는. 창은 사라졌는데 프로세스는 살아 있고, 다시 실행해도
+ * 아무 일도 일어나지 않는 것처럼 보인다.
+ *
+ * **설정이 아니라 실제로 트레이가 만들어졌는지를 본다.** 예전에는
+ * `config.system.trayIcon` 만 봤는데, 그 설정이 켜져 있어도 아이콘 파일이 없으면
+ * 트레이는 만들어지지 않는다. 실제로 `resources/tray.png` 가 없는 환경에서
+ * 정확히 그 상태가 됐다 — 설정상으로는 트레이가 있고, 화면에는 없었다.
+ *
+ * @param trayExists 트레이 인스턴스가 실제로 만들어졌는지.
  */
-export function shouldQuitOnClose(config: WaifuConfig): boolean {
-  if (!config.system.trayIcon) return true
+export function shouldQuitOnClose(config: WaifuConfig, trayExists: boolean): boolean {
+  if (!trayExists) return true
   return !config.system.closeToTray
 }

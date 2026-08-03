@@ -10,6 +10,7 @@ import type {
   StoredReminder,
   StoredRoutine,
   PermissionDecision,
+  PermissionRequest,
   WaifuApi,
   WaifuConfig
 } from '@shared/protocol'
@@ -35,11 +36,16 @@ const api: WaifuApi = {
   interrupt: () => ipcRenderer.send(IPC.interrupt),
   respondPermission: (id: string, decision: PermissionDecision) =>
     ipcRenderer.send(IPC.permissionRespond, { id, decision }),
+  listPendingPermissions: () =>
+    ipcRenderer.invoke(IPC.permissionList) as Promise<PermissionRequest[]>,
 
   getConfig: () => ipcRenderer.invoke(IPC.configGet) as Promise<WaifuConfig>,
   setConfig: (patch: Partial<WaifuConfig>) =>
     ipcRenderer.invoke(IPC.configSet, patch) as Promise<WaifuConfig>,
   pickModel: () => ipcRenderer.invoke(IPC.pickModel) as Promise<string | null>,
+  pickWorkspace: () => ipcRenderer.invoke(IPC.pickWorkspace) as Promise<string | null>,
+  restartApp: () =>
+    ipcRenderer.invoke(IPC.appRestart) as Promise<{ ok: boolean; reason?: string }>,
 
   listChanges: () => ipcRenderer.invoke(IPC.changesList) as Promise<FileChange[]>,
   undoChange: (id: string) =>
@@ -52,7 +58,7 @@ const api: WaifuApi = {
   listReminders: () => ipcRenderer.invoke(IPC.reminderList) as Promise<StoredReminder[]>,
   cancelReminder: (id: string) => ipcRenderer.invoke(IPC.reminderCancel, id) as Promise<boolean>,
 
-  diagnostics: () => ipcRenderer.invoke(IPC.diagnostics) as Promise<Diagnostics>,
+  diagnostics: () => ipcRenderer.invoke(IPC.diagnostics) as Promise<Diagnostics | null>,
   pingVoice: (url: string) => ipcRenderer.invoke(IPC.pingVoice, url) as Promise<string | null>
 }
 

@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using NUnit.Framework;
 using UnityEngine;
 using WaifuAvatar.Avatar;
@@ -326,6 +328,72 @@ namespace WaifuAvatar.Tests
                 var (timeScale, _) = Liveliness.LoopVariation(i / 100f);
                 Assert.GreaterOrEqual(timeScale, 0.94f);
                 Assert.LessOrEqual(timeScale, 1.06f);
+            }
+        }
+    }
+
+    public class LoopTimeTests
+    {
+        [Test]
+        public void 프레임_시간과_배속만큼_전진한다()
+        {
+            Assert.That(Liveliness.LoopTime(1f, 0.5f, 1.2f, 5f), Is.EqualTo(1.6f).Within(1e-5f));
+        }
+
+        [Test]
+        public void 클립_끝을_넘으면_처음으로_감싼다()
+        {
+            Assert.That(Liveliness.LoopTime(4.8f, 0.5f, 1f, 5f), Is.EqualTo(0.3f).Within(1e-5f));
+        }
+
+        [Test]
+        public void 길이가_없는_클립은_안전하게_0이다()
+        {
+            Assert.AreEqual(0f, Liveliness.LoopTime(1f, 1f, 1f, 0f));
+        }
+
+        [Test]
+        public void 원샷은_끝을_넘어도_감기지_않는다()
+        {
+            var time = Liveliness.OneShotTime(1.8f, 0.5f, 1f, 2f, out var finished);
+            Assert.AreEqual(2f, time);
+            Assert.IsTrue(finished);
+        }
+
+        [Test]
+        public void 원샷_중간에는_끝나지_않는다()
+        {
+            var time = Liveliness.OneShotTime(0.2f, 0.3f, 1.5f, 2f, out var finished);
+            Assert.That(time, Is.EqualTo(0.65f).Within(1e-5f));
+            Assert.IsFalse(finished);
+        }
+    }
+
+    public class VrmaManifestTests
+    {
+        [Test]
+        public void manifest의_loop_값을_사용한다()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "waifu-vrma-test-" + Guid.NewGuid());
+            Directory.CreateDirectory(directory);
+            try
+            {
+                File.WriteAllBytes(Path.Combine(directory, "nod.vrma"), Array.Empty<byte>());
+                File.WriteAllBytes(Path.Combine(directory, "idle.vrma"), Array.Empty<byte>());
+                File.WriteAllText(
+                    Path.Combine(directory, "manifest.json"),
+                    "{\"files\":[{\"name\":\"nod\",\"loop\":false},{\"name\":\"idle\",\"loop\":true}]}"
+                );
+
+                using var library = new VrmaLibrary();
+                library.Scan(directory);
+                Assert.IsFalse(library.IsLooping("nod"));
+                Assert.IsTrue(library.IsLooping("idle"));
+                Assert.IsTrue(library.IsLooping("custom-without-metadata"));
+            }
+            finally
+            {
+                Directory.Delete(directory, true);
             }
         }
     }

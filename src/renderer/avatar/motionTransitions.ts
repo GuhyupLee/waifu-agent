@@ -40,7 +40,12 @@ const LOOPABLE_MOTIONS = new Set([
   'mouse-tether-right',
   'mouse-tether-left',
   'mouse-tether-both',
-  'mouse-tether-float-curl'
+  'mouse-tether-float-curl',
+  // 걸터앉기. 앉은 자세는 사용자가 떼어낼 때까지 유지돼야 하므로 반드시 반복한다 —
+  // 한 번 재생하고 끝나면 앉은 채로 굳거나 T-pose 로 돌아간다.
+  'sit-edge',
+  'sit-legs-swing',
+  'sit-lean-back'
 ])
 
 export function effectiveMotionLoop(name: string, requested: boolean): boolean {
